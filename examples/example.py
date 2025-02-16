@@ -1,7 +1,6 @@
 import asyncio
 
 import GozargahNodeBridge as Bridge
-from GozargahNodeBridge.common import service_pb2 as service
 
 address = "172.27.158.135"
 port = 62050
@@ -25,7 +24,7 @@ with open(server_ca_file, "r") as f:
 
 async def main():
     node = Bridge.create_node(
-        connection=Bridge.NodeType.REST,
+        connection=Bridge.NodeType.GRPC,
         address=address,
         port=port,
         client_cert=client_cert_content,
@@ -33,7 +32,7 @@ async def main():
         server_ca=server_ca_content,
     )
 
-    await node.start(config, service.BackendType.XRAY, [], timeout=5)
+    await node.start(config=config, backend_type=0, users=[], timeout=20)
 
     user = Bridge.create_user(
         email="jeff", proxies=Bridge.create_proxy(vmess_id="0d59268a-9847-4218-ae09-65308eb52e08"), inbounds=[]

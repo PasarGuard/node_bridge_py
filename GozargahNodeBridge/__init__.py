@@ -12,7 +12,7 @@ from enum import Enum
 from GozargahNodeBridge.abstract_node import GozargahNode
 from GozargahNodeBridge.grpclib import Node as GrpcNode
 from GozargahNodeBridge.rest import Node as RestNode
-from GozargahNodeBridge.controller import NodeAPIError
+from GozargahNodeBridge.controller import NodeAPIError, Health
 from GozargahNodeBridge.utils import create_user, create_proxy
 
 
@@ -76,6 +76,7 @@ __all__ = [
     "NodeType",
     "Node",
     "NodeAPIError",
+    "Health",
     "create_user",
     "create_proxy",
     "create_node",
