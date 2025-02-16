@@ -26,8 +26,10 @@ class Health(IntEnum):
 
 
 class Controller:
-    def __init__(self, client_cert: str, client_key: str, server_ca: str, extra: dict = {}):
+    def __init__(self, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None):
         self._temp_files = []
+        if extra is None:
+            extra = {}
         try:
             ca_path = string_to_temp_file(server_ca)
             cert_path = string_to_temp_file(client_cert)
@@ -92,7 +94,7 @@ class Controller:
         await self.connected()
         async with self._lock.writer_lock:
             if self._user_queue:
-                user["inbounds"] = []
+                user.inbounds.clear()
                 await self._user_queue.put(user)
 
     async def get_logs(self) -> Optional[asyncio.Queue]:
@@ -103,14 +105,16 @@ class Controller:
     @property
     async def node_version(self) -> str:
         async with self._lock.reader_lock:
-            return self.node_version
+            return self._node_version
 
     @property
     async def core_version(self) -> str:
         async with self._lock.reader_lock:
-            return self.core_version
+            return self._core_version
 
-    async def connect(self, node_version: str, core_version: str, tasks: List[asyncio.Task] = []):
+    async def connect(self, node_version: str, core_version: str, tasks: List[asyncio.Task] | None = None):
+        if tasks is None:
+            tasks = []
         async with self._lock.writer_lock:
             self._user_queue = asyncio.Queue()
             self._notify_queue = asyncio.Queue()

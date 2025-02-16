@@ -4,15 +4,14 @@ from typing import List
 
 
 from aiorwlock import RWLock
-from google.protobuf.message import Message
-
+from google.protobuf.message import Message, DecodeError
 from GozargahNodeBridge.controller import NodeAPIError, Health
 from GozargahNodeBridge.common import service_pb2 as service
 from GozargahNodeBridge.abstract_node import GozargahNode
 
 
 class Node(GozargahNode):
-    def __init__(self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict = {}):
+    def __init__(self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None):
         super().__init__(client_cert, client_key, server_ca, extra)
 
         url = f"https://{address.strip('/')}:{port}/"
@@ -46,10 +45,13 @@ class Node(GozargahNode):
     def _deserialize_protobuf(self, proto_class: type[Message], data: bytes) -> Message:
         """Deserialize bytes into a protobuf message."""
         proto_instance = proto_class()
-        proto_instance.ParseFromString(data)
+        try:
+            proto_instance.ParseFromString(data)
+        except DecodeError as e:
+                raise NodeAPIError(code=-2, detail=f"Error deserialising protobuf: {e}")
         return proto_instance
 
-    def _handle_error(error: Exception):
+    def _handle_error(self, error: Exception):
         if isinstance(error, httpx.RemoteProtocolError):
             raise NodeAPIError(code=-1, detail=f"Server closed connection: {error}")
         elif isinstance(error, httpx.HTTPStatusError):
@@ -218,7 +220,7 @@ class Node(GozargahNode):
 
     async def sync_users(self, users: List[service.User], timeout: int = 10) -> service.Empty | None:
         await self.connected()
-        async with self._node_lock.reader_lock:
+        async with self._node_lock.writer_lock:
             return await self._make_request(
                 method="POST",
                 endpoint="users/sync",
@@ -306,6 +308,8 @@ class Node(GozargahNode):
             # Handle UserChan message
             if user_task in done:
                 user = user_task.result()
+                if user is None:
+                    continue
 
                 try:
                     await self._make_request(

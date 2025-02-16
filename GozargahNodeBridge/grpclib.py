@@ -14,7 +14,7 @@ from GozargahNodeBridge.abstract_node import GozargahNode
 
 
 class Node(GozargahNode):
-    def __init__(self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict = {}):
+    def __init__(self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None):
         super().__init__(client_cert, client_key, server_ca, extra)
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
@@ -199,7 +199,7 @@ class Node(GozargahNode):
 
         async with self._node_lock.reader_lock:
             return await self._handle_grpc_request(
-                method=self._client.GetInboundStats,
+                method=self._client.GetUserStats,
                 request=service.StatRequest(name=email, reset=reset),
                 timeout=timeout,
             )
@@ -217,9 +217,9 @@ class Node(GozargahNode):
     async def sync_users(self, users: List[service.User], timeout: int = 10) -> service.Empty | None:
         await self.connected()
 
-        async with self._node_lock.reader_lock:
+        async with self._node_lock.writer_lock:
             return await self._handle_grpc_request(
-                method=self._client.GetOutboundsStats,
+                method=self._client.SyncUsers,
                 request=service.Users(users=users),
                 timeout=timeout,
             )
@@ -252,6 +252,8 @@ class Node(GozargahNode):
                     await stream.send_message(service.Empty())
                     while True:
                         log = await stream.recv_message()
+                        if log is None:
+                            continue
                         await self._logs_queue.put(log.detail)
 
             except Exception as e:
@@ -295,6 +297,8 @@ class Node(GozargahNode):
                 # Handle UserChan message
                 if user_task in done:
                     user = user_task.result()
+                    if user is None:
+                        continue
 
                     try:
                         # Send the user through the gRPC stream
