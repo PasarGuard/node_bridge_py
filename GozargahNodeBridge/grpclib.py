@@ -14,7 +14,9 @@ from GozargahNodeBridge.abstract_node import GozargahNode
 
 
 class Node(GozargahNode):
-    def __init__(self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None):
+    def __init__(
+        self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None
+    ):
         super().__init__(client_cert, client_key, server_ca, extra)
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
@@ -71,7 +73,11 @@ class Node(GozargahNode):
             await self._handle_error(e)
 
     async def start(
-        self, config: str, backend_type: service.BackendType, users: List[service.User], timeout: int = 15,
+        self,
+        config: str,
+        backend_type: service.BackendType,
+        users: List[service.User],
+        timeout: int = 15,
     ) -> service.BaseInfoResponse | None:
         """Start the node"""
         try:

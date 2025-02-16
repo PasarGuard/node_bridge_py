@@ -11,7 +11,9 @@ from GozargahNodeBridge.abstract_node import GozargahNode
 
 
 class Node(GozargahNode):
-    def __init__(self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None):
+    def __init__(
+        self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None
+    ):
         super().__init__(client_cert, client_key, server_ca, extra)
 
         url = f"https://{address.strip('/')}:{port}/"
@@ -48,7 +50,7 @@ class Node(GozargahNode):
         try:
             proto_instance.ParseFromString(data)
         except DecodeError as e:
-                raise NodeAPIError(code=-2, detail=f"Error deserialising protobuf: {e}")
+            raise NodeAPIError(code=-2, detail=f"Error deserialising protobuf: {e}")
         return proto_instance
 
     def _handle_error(self, error: Exception):
