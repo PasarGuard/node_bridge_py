@@ -176,4 +176,3 @@ config
 
 .python-version
 .ruff-cache
-uv.lock
