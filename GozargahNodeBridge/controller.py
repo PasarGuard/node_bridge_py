@@ -54,7 +54,7 @@ class Controller:
         self._tasks: List[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
-        self.extra = extra
+        self._extra = extra
         self._lock = RWLock()
 
     def _cleanup_temp_files(self):
@@ -111,6 +111,10 @@ class Controller:
     async def core_version(self) -> str:
         async with self._lock.reader_lock:
             return self._core_version
+    
+    async def get_extra(self) -> dict:
+        async with self._lock.reader_lock:
+            return self._extra
 
     async def connect(self, node_version: str, core_version: str, tasks: List[asyncio.Task] | None = None):
         if tasks is None:

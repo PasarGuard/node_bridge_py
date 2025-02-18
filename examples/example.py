@@ -30,6 +30,7 @@ async def main():
         client_cert=client_cert_content,
         client_key=client_key_content,
         server_ca=server_ca_content,
+        extra={"id":1}
     )
 
     await node.start(config=config, backend_type=0, users=[], timeout=20)
