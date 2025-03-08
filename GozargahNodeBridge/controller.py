@@ -10,6 +10,13 @@ from GozargahNodeBridge.common.service_pb2 import User
 from GozargahNodeBridge.utils import string_to_temp_file
 
 
+class RollingQueue(asyncio.Queue):
+    async def put(self, item):
+        while self.maxsize > 0 and self.full():
+            await self.get()
+        await super().put(item)
+
+
 class NodeAPIError(Exception):
     def __init__(self, code, detail):
         self.code = code
@@ -26,7 +33,10 @@ class Health(IntEnum):
 
 
 class Controller:
-    def __init__(self, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None):
+    def __init__(
+        self, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None, max_logs: int = 1000
+    ):
+        self.max_logs = max_logs
         self._temp_files = []
         if extra is None:
             extra = {}
@@ -49,7 +59,7 @@ class Controller:
 
         self._health = Health.NOT_CONNECTED
         self._user_queue: asyncio.Queue[User] | None = None
-        self._logs_queue: asyncio.Queue[str] | None = None
+        self._logs_queue: RollingQueue[str] | None = None
         self._notify_queue: asyncio.Queue | None = None
         self._tasks: List[asyncio.Task] = []
         self._node_version = ""
@@ -111,7 +121,7 @@ class Controller:
     async def core_version(self) -> str:
         async with self._lock.reader_lock:
             return self._core_version
-    
+
     async def get_extra(self) -> dict:
         async with self._lock.reader_lock:
             return self._extra
@@ -122,7 +132,7 @@ class Controller:
         async with self._lock.writer_lock:
             self._user_queue = asyncio.Queue()
             self._notify_queue = asyncio.Queue()
-            self._logs_queue = asyncio.Queue()
+            self._logs_queue = RollingQueue(self.max_logs)
             self._tasks = tasks
             self._node_version = node_version
             self._core_version = core_version

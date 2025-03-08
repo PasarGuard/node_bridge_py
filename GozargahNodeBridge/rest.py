@@ -12,9 +12,16 @@ from GozargahNodeBridge.abstract_node import GozargahNode
 
 class Node(GozargahNode):
     def __init__(
-        self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None
+        self,
+        address: str,
+        port: int,
+        client_cert: str,
+        client_key: str,
+        server_ca: str,
+        extra: dict | None = None,
+        max_logs: int = 1000,
     ):
-        super().__init__(client_cert, client_key, server_ca, extra)
+        super().__init__(client_cert, client_key, server_ca, extra, max_logs)
 
         url = f"https://{address.strip('/')}:{port}/"
 

@@ -15,9 +15,16 @@ from GozargahNodeBridge.abstract_node import GozargahNode
 
 class Node(GozargahNode):
     def __init__(
-        self, address: str, port: int, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None
+        self,
+        address: str,
+        port: int,
+        client_cert: str,
+        client_key: str,
+        server_ca: str,
+        extra: dict | None = None,
+        max_logs: int = 1000,
     ):
-        super().__init__(client_cert, client_key, server_ca, extra)
+        super().__init__(client_cert, client_key, server_ca, extra, max_logs)
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
             self._client = service_grpc.NodeServiceStub(self.channel)
