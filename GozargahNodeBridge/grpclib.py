@@ -96,22 +96,19 @@ class Node(GozargahNode):
         req = service.Backend(type=backend_type, config=config, users=users)
 
         async with self._node_lock.writer_lock:
-            try:
-                info = await asyncio.wait_for(self._client.Start(req), timeout=timeout)
+            info = await asyncio.wait_for(self._client.Start(req), timeout=timeout)
 
-                await self.connect(
-                    info.node_version,
-                    info.core_version,
-                    [
-                        asyncio.create_task(self._check_node_health()),
-                        asyncio.create_task(self._sync_user()),
-                        asyncio.create_task(self._fetch_logs()),
-                    ],
-                )
-                self._metadata = {"authorization": f"Bearer {info.session_id}"}
-            except Exception as e:
-                await self.disconnect()
-                await self._handle_error(e)
+            await self.connect(
+                info.node_version,
+                info.core_version,
+                [
+                    asyncio.create_task(self._check_node_health()),
+                    asyncio.create_task(self._sync_user()),
+                    asyncio.create_task(self._fetch_logs()),
+                ],
+            )
+            self._metadata = {"authorization": f"Bearer {info.session_id}"}
+            return info 
 
     async def stop(self, timeout: int = 10) -> None:
         """Stop the node"""
