@@ -107,6 +107,11 @@ class Controller:
                 user.inbounds.clear()
                 await self._user_queue.put(user)
 
+    async def flush_user_queue(self):
+        await self.connected()
+        async with self._lock.writer_lock:
+            self._user_queue.empty()
+
     async def get_logs(self) -> Optional[asyncio.Queue]:
         await self.connected()
         async with self._lock.reader_lock:

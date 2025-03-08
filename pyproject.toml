@@ -1,6 +1,6 @@
 [project]
 name = "gozargah-node-bridge"
-version = "0.0.7"
+version = "0.0.8"
 description = "python package to connect your project with gozargah node go"
 url = "https://github.com/m03ed/gozargah_node_bridge_py"
 keywords = ["Gozargah-Node", "Marzban", "Gozargah", "Marzban python", "Marzban API"]

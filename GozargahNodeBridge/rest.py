@@ -104,7 +104,7 @@ class Node(GozargahNode):
         try:
             await self.connected()
             await self.stop()
-        except:
+        except Exception:
             pass
 
         async with self._node_lock.writer_lock:
@@ -221,14 +221,19 @@ class Node(GozargahNode):
         async with self._node_lock.reader_lock:
             return await self._make_request(
                 method="GET",
-                endpoint=f"stats/user/online",
+                endpoint="stats/user/online",
                 timeout=timeout,
                 proto_message=service.StatRequest(name=email),
                 proto_response_class=service.OnlineStatResponse,
             )
 
-    async def sync_users(self, users: List[service.User], timeout: int = 10) -> service.Empty | None:
+    async def sync_users(
+        self, users: List[service.User], flush_queue: bool = False, timeout: int = 10
+    ) -> service.Empty | None:
         await self.connected()
+        if flush_queue:
+            self.flush_user_queue()
+
         async with self._node_lock.writer_lock:
             return await self._make_request(
                 method="POST",
@@ -246,7 +251,7 @@ class Node(GozargahNode):
                 await self.get_backend_stats()
                 if last_health != Health.HEALTHY:
                     await self.set_health(Health.HEALTHY)
-            except Exception as e:
+            except Exception:
                 if last_health != Health.BROKEN:
                     await self.set_health(Health.BROKEN)
 

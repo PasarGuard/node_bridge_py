@@ -227,8 +227,12 @@ class Node(GozargahNode):
                 timeout=timeout,
             )
 
-    async def sync_users(self, users: List[service.User], timeout: int = 10) -> service.Empty | None:
+    async def sync_users(
+        self, users: List[service.User], flush_queue: bool = False, timeout: int = 10
+    ) -> service.Empty | None:
         await self.connected()
+        if flush_queue:
+            self.flush_user_queue()
 
         async with self._node_lock.writer_lock:
             return await self._handle_grpc_request(
@@ -245,7 +249,7 @@ class Node(GozargahNode):
                 await self.get_backend_stats()
                 if last_health != Health.HEALTHY:
                     await self.set_health(Health.HEALTHY)
-            except Exception as e:
+            except Exception:
                 if last_health != Health.BROKEN:
                     await self.set_health(Health.BROKEN)
 
@@ -269,7 +273,7 @@ class Node(GozargahNode):
                             continue
                         await self._logs_queue.put(log.detail)
 
-            except Exception as e:
+            except Exception:
                 await asyncio.sleep(3)
                 continue
 
@@ -316,6 +320,6 @@ class Node(GozargahNode):
                     try:
                         # Send the user through the gRPC stream
                         await stream.send_message(user)
-                    except Exception as e:
+                    except Exception:
                         await asyncio.sleep(5)
                         continue
