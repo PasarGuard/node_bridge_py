@@ -96,13 +96,13 @@ class Controller:
 
     async def update_user(self, user: User):
         await self.connected()
-        async with self._lock.writer_lock:
+        async with self._lock.reader_lock:
             if self._user_queue:
                 await self._user_queue.put(user)
 
     async def remove_user(self, user: User):
         await self.connected()
-        async with self._lock.writer_lock:
+        async with self._lock.reader_lock:
             if self._user_queue:
                 user.inbounds.clear()
                 await self._user_queue.put(user)
