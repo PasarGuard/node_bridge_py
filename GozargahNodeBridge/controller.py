@@ -109,6 +109,11 @@ class Controller:
         await self.connected()
         async with self._lock.reader_lock:
             return self._logs_queue
+    
+    async def flush_logs_queue(self):
+        await self.connected()
+        async with self._lock.writer_lock:
+            self._logs_queue.empty()
 
     @property
     async def node_version(self) -> str:
