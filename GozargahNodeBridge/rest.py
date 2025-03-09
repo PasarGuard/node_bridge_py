@@ -1,7 +1,5 @@
 import asyncio
 import httpx
-from typing import List
-
 
 from aiorwlock import RWLock
 from google.protobuf.message import Message, DecodeError
@@ -100,12 +98,12 @@ class Node(GozargahNode):
         except Exception as e:
             self._handle_error(e)
 
-    async def start(self, config: str, backend_type: service.BackendType, users: List[service.User], timeout: int = 15):
-        try:
-            await self.connected()
+    async def start(self, config: str, backend_type: service.BackendType, users: list[service.User], timeout: int = 15):
+        health = await self.get_health()
+        if health in (Health.BROKEN, Health.HEALTHY):
             await self.stop()
-        except Exception:
-            pass
+        elif health is Health.INVALID:
+            raise NodeAPIError(code=-4, detail="Invalid node")
 
         async with self._node_lock.writer_lock:
             response = await self._make_request(
@@ -130,7 +128,8 @@ class Node(GozargahNode):
         return response
 
     async def stop(self, timeout: int = 10) -> None:
-        await self.connected()
+        if await self.get_health() is Health.NOT_CONNECTED:
+            return
         async with self._node_lock.writer_lock:
             await self.disconnect()
             await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
@@ -228,7 +227,7 @@ class Node(GozargahNode):
             )
 
     async def sync_users(
-        self, users: List[service.User], flush_queue: bool = False, timeout: int = 10
+        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
     ) -> service.Empty | None:
         await self.connected()
         if flush_queue:

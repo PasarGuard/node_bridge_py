@@ -1,5 +1,4 @@
 import asyncio
-from typing import List
 
 from grpclib.client import Channel
 from grpclib.config import Configuration
@@ -83,15 +82,15 @@ class Node(GozargahNode):
         self,
         config: str,
         backend_type: service.BackendType,
-        users: List[service.User],
+        users: list[service.User],
         timeout: int = 15,
     ) -> service.BaseInfoResponse | None:
         """Start the node"""
-        try:
-            await self.connected()
+        health = await self.get_health()
+        if health in (Health.BROKEN, Health.HEALTHY):
             await self.stop()
-        except Exception:
-            pass
+        elif health is Health.INVALID:
+            raise NodeAPIError(code=-4, detail="Invalid node")
 
         req = service.Backend(type=backend_type, config=config, users=users)
 
@@ -108,20 +107,22 @@ class Node(GozargahNode):
                 ],
             )
             self._metadata = {"authorization": f"Bearer {info.session_id}"}
-            return info 
+            return info
 
     async def stop(self, timeout: int = 10) -> None:
         """Stop the node"""
-        await self.connected()
+        if await self.get_health() is Health.NOT_CONNECTED:
+            return
 
         async with self._node_lock.writer_lock:
+            await self.disconnect()
+
             await self._handle_grpc_request(
                 method=self._client.Stop,
                 request=service.Empty(),
                 timeout=timeout,
             )
 
-            await self.disconnect()
             self._metadata = None
 
     async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
@@ -225,7 +226,7 @@ class Node(GozargahNode):
             )
 
     async def sync_users(
-        self, users: List[service.User], flush_queue: bool = False, timeout: int = 10
+        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
     ) -> service.Empty | None:
         await self.connected()
         if flush_queue:

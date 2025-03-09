@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List
 
 from GozargahNodeBridge.common import service_pb2 as service
 from GozargahNodeBridge.controller import Controller
@@ -8,7 +7,7 @@ from GozargahNodeBridge.controller import Controller
 class GozargahNode(Controller, ABC):
     @abstractmethod
     async def start(
-        self, config: str, backend_type: service.BackendType, users: List[service.User], timeout: int
+        self, config: str, backend_type: service.BackendType, users: list[service.User], timeout: int
     ) -> service.BaseInfoResponse | None:
         raise NotImplementedError
 
@@ -53,7 +52,7 @@ class GozargahNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def sync_users(self, users: List[service.User], timeout: int) -> service.Empty | None:
+    async def sync_users(self, users: list[service.User], timeout: int) -> service.Empty | None:
         raise NotImplementedError
 
     @abstractmethod

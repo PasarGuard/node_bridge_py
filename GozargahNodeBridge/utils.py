@@ -1,5 +1,4 @@
 import tempfile
-from typing import List
 
 from GozargahNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks
 
@@ -10,7 +9,7 @@ def string_to_temp_file(content: str):
         return f.name
 
 
-def create_user(email: str, proxies: Proxy, inbounds: List[str]) -> User:
+def create_user(email: str, proxies: Proxy, inbounds: list[str]) -> User:
     return User(email=email, proxies=proxies, inbounds=inbounds)
 
 

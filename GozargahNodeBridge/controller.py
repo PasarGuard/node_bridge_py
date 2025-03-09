@@ -2,7 +2,6 @@ import ssl
 import asyncio
 from enum import IntEnum
 from pathlib import Path
-from typing import Optional, List
 
 from aiorwlock import RWLock
 
@@ -30,6 +29,7 @@ class Health(IntEnum):
     NOT_CONNECTED = 0
     BROKEN = 1
     HEALTHY = 2
+    INVALID = 3
 
 
 class Controller:
@@ -61,7 +61,7 @@ class Controller:
         self._user_queue: asyncio.Queue[User] | None = None
         self._logs_queue: RollingQueue[str] | None = None
         self._notify_queue: asyncio.Queue | None = None
-        self._tasks: List[asyncio.Task] = []
+        self._tasks: list[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
         self._extra = extra
@@ -80,6 +80,8 @@ class Controller:
 
     async def set_health(self, health: Health):
         async with self._lock.writer_lock:
+            if self._health is Health.INVALID:
+                return
             if health == Health.BROKEN and self._health != Health.BROKEN:
                 if self._notify_queue:
                     await self._notify_queue.put(None)
@@ -90,8 +92,11 @@ class Controller:
             return self._health
 
     async def connected(self) -> bool:
-        if await self.get_health() == Health.NOT_CONNECTED:
-            raise NodeAPIError(code=0, detail="Node is not connected")
+        health = await self.get_health()
+        if health is Health.NOT_CONNECTED:
+            raise NodeAPIError(code=-3, detail="Node is not connected")
+        elif health is Health.INVALID:
+            raise NodeAPIError(code=-4, detail="Invalid node")
         return True
 
     async def update_user(self, user: User):
@@ -105,11 +110,11 @@ class Controller:
         async with self._lock.writer_lock:
             self._user_queue.empty()
 
-    async def get_logs(self) -> Optional[asyncio.Queue]:
+    async def get_logs(self) -> asyncio.Queue | None:
         await self.connected()
         async with self._lock.reader_lock:
             return self._logs_queue
-    
+
     async def flush_logs_queue(self):
         await self.connected()
         async with self._lock.writer_lock:
@@ -129,7 +134,7 @@ class Controller:
         async with self._lock.reader_lock:
             return self._extra
 
-    async def connect(self, node_version: str, core_version: str, tasks: List[asyncio.Task] | None = None):
+    async def connect(self, node_version: str, core_version: str, tasks: list[asyncio.Task] | None = None):
         if tasks is None:
             tasks = []
         async with self._lock.writer_lock:
@@ -142,6 +147,8 @@ class Controller:
             self._health = Health.HEALTHY
 
     async def disconnect(self):
+        await self.set_health(Health.NOT_CONNECTED)
+
         async with self._lock.writer_lock:
             for task in self._tasks:
                 task.cancel()
@@ -163,4 +170,3 @@ class Controller:
 
             self._node_version = ""
             self._core_version = ""
-            self._health = Health.NOT_CONNECTED
