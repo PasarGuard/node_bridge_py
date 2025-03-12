@@ -7,7 +7,7 @@ __version__ = "0.0.15"
 __author__ = "M03ED"
 
 
-from enum import IntEnum
+from enum import Enum
 
 from GozargahNodeBridge.abstract_node import GozargahNode
 from GozargahNodeBridge.grpclib import Node as GrpcNode
@@ -16,7 +16,7 @@ from GozargahNodeBridge.controller import NodeAPIError, Health
 from GozargahNodeBridge.utils import create_user, create_proxy
 
 
-class NodeType(IntEnum):
+class NodeType(str, Enum):
     grpc = "grpc"
     rest = "rest"
 
