@@ -3,11 +3,11 @@ Gozargah Node Bridge
 A Python library for connecting to Gozargah nodes.
 """
 
-__version__ = "0.0.13"
+__version__ = "0.0.14"
 __author__ = "M03ED"
 
 
-from enum import Enum
+from enum import IntEnum
 
 from GozargahNodeBridge.abstract_node import GozargahNode
 from GozargahNodeBridge.grpclib import Node as GrpcNode
@@ -16,9 +16,9 @@ from GozargahNodeBridge.controller import NodeAPIError, Health
 from GozargahNodeBridge.utils import create_user, create_proxy
 
 
-class NodeType(str, Enum):
-    GRPC = "grpc"
-    REST = "rest"
+class NodeType(IntEnum):
+    GRPC = 0
+    REST = 1
 
 
 def create_node(
