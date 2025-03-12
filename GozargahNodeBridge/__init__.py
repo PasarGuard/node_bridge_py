@@ -3,7 +3,7 @@ Gozargah Node Bridge
 A Python library for connecting to Gozargah nodes.
 """
 
-__version__ = "0.0.15"
+__version__ = "0.0.16"
 __author__ = "M03ED"
 
 
