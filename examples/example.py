@@ -24,7 +24,7 @@ with open(server_ca_file, "r") as f:
 
 async def main():
     node = Bridge.create_node(
-        connection=Bridge.NodeType.GRPC,
+        connection=Bridge.NodeType.grpc,
         address=address,
         port=port,
         client_cert=client_cert_content,

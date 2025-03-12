@@ -3,7 +3,7 @@ Gozargah Node Bridge
 A Python library for connecting to Gozargah nodes.
 """
 
-__version__ = "0.0.14"
+__version__ = "0.0.15"
 __author__ = "M03ED"
 
 
@@ -17,8 +17,8 @@ from GozargahNodeBridge.utils import create_user, create_proxy
 
 
 class NodeType(IntEnum):
-    GRPC = 0
-    REST = 1
+    grpc = "grpc"
+    rest = "rest"
 
 
 def create_node(
@@ -57,7 +57,7 @@ def create_node(
           and private key as strings, not file paths.
     """
 
-    if connection is NodeType.GRPC:
+    if connection is NodeType.grpc:
         node = GrpcNode(
             address=address,
             port=port,
@@ -68,7 +68,7 @@ def create_node(
             max_logs=max_logs,
         )
 
-    elif connection is NodeType.REST:
+    elif connection is NodeType.rest:
         node = RestNode(
             address=address,
             port=port,
