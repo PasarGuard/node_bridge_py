@@ -95,8 +95,11 @@ class Node(GozargahNode):
         req = service.Backend(type=backend_type, config=config, users=users)
 
         async with self._node_lock.writer_lock:
-            info = await asyncio.wait_for(self._client.Start(req), timeout=timeout)
-
+            info = await self._handle_grpc_request(
+                method=self._client.Start,
+                request=req,
+                timeout=timeout,
+            )
             await self.connect(
                 info.node_version,
                 info.core_version,
