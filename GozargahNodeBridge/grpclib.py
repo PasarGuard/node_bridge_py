@@ -83,6 +83,7 @@ class Node(GozargahNode):
         config: str,
         backend_type: service.BackendType,
         users: list[service.User],
+        keep_alive: int = 0,
         timeout: int = 15,
     ) -> service.BaseInfoResponse | None:
         """Start the node"""
@@ -92,7 +93,7 @@ class Node(GozargahNode):
         elif health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
-        req = service.Backend(type=backend_type, config=config, users=users)
+        req = service.Backend(type=backend_type, config=config, users=users, keep_alive=keep_alive)
 
         async with self._node_lock.writer_lock:
             info = await self._handle_grpc_request(

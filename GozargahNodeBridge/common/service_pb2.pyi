@@ -30,26 +30,22 @@ class BaseInfoResponse(_message.Message):
     def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ..., session_id: _Optional[str] = ..., extra: _Optional[str] = ...) -> None: ...
 
 class Backend(_message.Message):
-    __slots__ = ("type", "config", "users")
+    __slots__ = ("type", "config", "users", "keep_alive")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     USERS_FIELD_NUMBER: _ClassVar[int]
+    KEEP_ALIVE_FIELD_NUMBER: _ClassVar[int]
     type: BackendType
     config: str
     users: _containers.RepeatedCompositeFieldContainer[User]
-    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ...) -> None: ...
+    keep_alive: int
+    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ...) -> None: ...
 
 class Log(_message.Message):
     __slots__ = ("detail",)
     DETAIL_FIELD_NUMBER: _ClassVar[int]
     detail: str
     def __init__(self, detail: _Optional[str] = ...) -> None: ...
-
-class LogList(_message.Message):
-    __slots__ = ("logs",)
-    LOGS_FIELD_NUMBER: _ClassVar[int]
-    logs: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, logs: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class Stat(_message.Message):
     __slots__ = ("name", "type", "link", "value")

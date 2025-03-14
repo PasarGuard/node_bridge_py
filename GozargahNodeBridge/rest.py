@@ -98,7 +98,14 @@ class Node(GozargahNode):
         except Exception as e:
             self._handle_error(e)
 
-    async def start(self, config: str, backend_type: service.BackendType, users: list[service.User], timeout: int = 15):
+    async def start(
+        self,
+        config: str,
+        backend_type: service.BackendType,
+        users: list[service.User],
+        keep_alive: int = 0,
+        timeout: int = 15,
+    ):
         health = await self.get_health()
         if health in (Health.BROKEN, Health.HEALTHY):
             await self.stop()
@@ -110,7 +117,7 @@ class Node(GozargahNode):
                 method="POST",
                 endpoint="start",
                 timeout=timeout,
-                proto_message=service.Backend(type=backend_type, config=config, users=users),
+                proto_message=service.Backend(type=backend_type, config=config, users=users, keep_alive=keep_alive),
                 proto_response_class=service.BaseInfoResponse,
             )
 
