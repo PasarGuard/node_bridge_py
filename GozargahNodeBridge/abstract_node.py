@@ -52,6 +52,10 @@ class GozargahNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def user_online_stats(self, email: str, timeout: int) -> service.OnlineStatResponse | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def sync_users(self, users: list[service.User], timeout: int) -> service.Empty | None:
         raise NotImplementedError
 
