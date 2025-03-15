@@ -74,6 +74,14 @@ class StatRequest(_message.Message):
     def __init__(self, name: _Optional[str] = ..., reset: bool = ...) -> None: ...
 
 class OnlineStatResponse(_message.Message):
+    __slots__ = ("name", "value")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    value: int
+    def __init__(self, name: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+
+class StatsOnlineIpListResponse(_message.Message):
     __slots__ = ("name", "ips")
     class IpsEntry(_message.Message):
         __slots__ = ("key", "value")

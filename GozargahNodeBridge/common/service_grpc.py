@@ -67,6 +67,10 @@ class NodeServiceBase(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def GetUserOnlineIpListStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatsOnlineIpListResponse]') -> None:
+        pass
+
+    @abc.abstractmethod
     async def SyncUser(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.User, GozargahNodeBridge.common.service_pb2.Empty]') -> None:
         pass
 
@@ -153,6 +157,12 @@ class NodeServiceBase(abc.ABC):
                 grpclib.const.Cardinality.UNARY_UNARY,
                 GozargahNodeBridge.common.service_pb2.StatRequest,
                 GozargahNodeBridge.common.service_pb2.OnlineStatResponse,
+            ),
+            '/service.NodeService/GetUserOnlineIpListStats': grpclib.const.Handler(
+                self.GetUserOnlineIpListStats,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                GozargahNodeBridge.common.service_pb2.StatRequest,
+                GozargahNodeBridge.common.service_pb2.StatsOnlineIpListResponse,
             ),
             '/service.NodeService/SyncUser': grpclib.const.Handler(
                 self.SyncUser,
@@ -249,6 +259,12 @@ class NodeServiceStub:
             '/service.NodeService/GetUserOnlineStats',
             GozargahNodeBridge.common.service_pb2.StatRequest,
             GozargahNodeBridge.common.service_pb2.OnlineStatResponse,
+        )
+        self.GetUserOnlineIpListStats = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/GetUserOnlineIpListStats',
+            GozargahNodeBridge.common.service_pb2.StatRequest,
+            GozargahNodeBridge.common.service_pb2.StatsOnlineIpListResponse,
         )
         self.SyncUser = grpclib.client.StreamUnaryMethod(
             channel,

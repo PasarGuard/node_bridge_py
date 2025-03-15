@@ -219,12 +219,22 @@ class Node(GozargahNode):
                 timeout=timeout,
             )
 
-    async def user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
         await self.connected()
 
         async with self._node_lock.reader_lock:
             return await self._handle_grpc_request(
                 method=self._client.GetUserOnlineStats,
+                request=service.StatRequest(name=email),
+                timeout=timeout,
+            )
+    
+    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
+        await self.connected()
+
+        async with self._node_lock.reader_lock:
+            return await self._handle_grpc_request(
+                method=self._client.GetUserOnlineIpListStats,
                 request=service.StatRequest(name=email),
                 timeout=timeout,
             )

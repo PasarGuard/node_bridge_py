@@ -222,7 +222,7 @@ class Node(GozargahNode):
                 proto_response_class=service.StatResponse,
             )
 
-    async def user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
         await self.connected()
         async with self._node_lock.reader_lock:
             return await self._make_request(
@@ -231,6 +231,17 @@ class Node(GozargahNode):
                 timeout=timeout,
                 proto_message=service.StatRequest(name=email),
                 proto_response_class=service.OnlineStatResponse,
+            )
+        
+    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
+        await self.connected()
+        async with self._node_lock.reader_lock:
+            return await self._make_request(
+                method="GET",
+                endpoint="stats/user/online_ip",
+                timeout=timeout,
+                proto_message=service.StatRequest(name=email),
+                proto_response_class=service.StatsOnlineIpListResponse,
             )
 
     async def sync_users(
