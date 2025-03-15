@@ -1,5 +1,8 @@
 import tempfile
 
+from grpc import StatusCode as Status
+from http import HTTPStatus
+
 from GozargahNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks
 
 
@@ -27,3 +30,27 @@ def create_proxy(
         trojan=Trojan(password=trojan_password),
         shadowsocks=Shadowsocks(password=shadowsocks_password, method=shadowsocks_method),
     )
+
+
+def grpc_to_http_status(grpc_status: Status) -> int:
+    """Map gRPC status codes to HTTP status codes."""
+    mapping = {
+        Status.OK: HTTPStatus.OK.value,
+        Status.CANCELLED: 499,
+        Status.UNKNOWN: HTTPStatus.INTERNAL_SERVER_ERROR.value,
+        Status.INVALID_ARGUMENT: HTTPStatus.BAD_REQUEST.value,
+        Status.DEADLINE_EXCEEDED: HTTPStatus.GATEWAY_TIMEOUT.value,
+        Status.NOT_FOUND: HTTPStatus.NOT_FOUND.value,
+        Status.ALREADY_EXISTS: HTTPStatus.CONFLICT.value,
+        Status.PERMISSION_DENIED: HTTPStatus.FORBIDDEN.value,
+        Status.UNAUTHENTICATED: HTTPStatus.UNAUTHORIZED.value,
+        Status.RESOURCE_EXHAUSTED: HTTPStatus.TOO_MANY_REQUESTS.value,
+        Status.FAILED_PRECONDITION: HTTPStatus.PRECONDITION_FAILED.value,
+        Status.ABORTED: HTTPStatus.CONFLICT.value,
+        Status.OUT_OF_RANGE: HTTPStatus.BAD_REQUEST.value,
+        Status.UNIMPLEMENTED: HTTPStatus.NOT_IMPLEMENTED.value,
+        Status.INTERNAL: HTTPStatus.INTERNAL_SERVER_ERROR.value,
+        Status.UNAVAILABLE: HTTPStatus.SERVICE_UNAVAILABLE.value,
+        Status.DATA_LOSS: HTTPStatus.INTERNAL_SERVER_ERROR.value,
+    }
+    return mapping.get(grpc_status, HTTPStatus.INTERNAL_SERVER_ERROR.value)

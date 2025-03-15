@@ -1,16 +1,16 @@
 import asyncio
+from http import HTTPStatus
 
 from grpclib.client import Channel
 from grpclib.config import Configuration
 from grpclib.exceptions import GRPCError, StreamTerminatedError
-from grpc import StatusCode as Status
-from http import HTTPStatus
 from aiorwlock import RWLock
 
 from GozargahNodeBridge.common import service_pb2 as service
 from GozargahNodeBridge.common import service_grpc
 from GozargahNodeBridge.controller import NodeAPIError, Health
 from GozargahNodeBridge.abstract_node import GozargahNode
+from GozargahNodeBridge.utils import grpc_to_http_status
 
 
 class Node(GozargahNode):
@@ -55,36 +55,13 @@ class Node(GozargahNode):
         self._cleanup_temp_files()
         self._close_chan()
 
-    def grpc_to_http_status(grpc_status: Status) -> int:
-        """Map gRPC status codes to HTTP status codes."""
-        mapping = {
-            Status.OK: HTTPStatus.OK.value,
-            Status.CANCELLED: 499,
-            Status.UNKNOWN: HTTPStatus.INTERNAL_SERVER_ERROR.value,
-            Status.INVALID_ARGUMENT: HTTPStatus.BAD_REQUEST.value,
-            Status.DEADLINE_EXCEEDED: HTTPStatus.GATEWAY_TIMEOUT.value,
-            Status.NOT_FOUND: HTTPStatus.NOT_FOUND.value,
-            Status.ALREADY_EXISTS: HTTPStatus.CONFLICT.value,
-            Status.PERMISSION_DENIED: HTTPStatus.FORBIDDEN.value,
-            Status.UNAUTHENTICATED: HTTPStatus.UNAUTHORIZED.value,
-            Status.RESOURCE_EXHAUSTED: HTTPStatus.TOO_MANY_REQUESTS.value,
-            Status.FAILED_PRECONDITION: HTTPStatus.PRECONDITION_FAILED.value,
-            Status.ABORTED: HTTPStatus.CONFLICT.value,
-            Status.OUT_OF_RANGE: HTTPStatus.BAD_REQUEST.value,
-            Status.UNIMPLEMENTED: HTTPStatus.NOT_IMPLEMENTED.value,
-            Status.INTERNAL: HTTPStatus.INTERNAL_SERVER_ERROR.value,
-            Status.UNAVAILABLE: HTTPStatus.SERVICE_UNAVAILABLE.value,
-            Status.DATA_LOSS: HTTPStatus.INTERNAL_SERVER_ERROR.value,
-        }
-        return mapping.get(grpc_status, HTTPStatus.INTERNAL_SERVER_ERROR.value)
-
     async def _handle_error(self, error: Exception):
         """Convert gRPC errors to NodeAPIError with HTTP status codes."""
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(HTTPStatus.REQUEST_TIMEOUT.value, "Request timed out")
         elif isinstance(error, GRPCError):
             grpc_status = error.status
-            http_status = self.grpc_to_http_status(grpc_status)
+            http_status = grpc_to_http_status(grpc_status)
             raise NodeAPIError(http_status, error.message)
         elif isinstance(error, StreamTerminatedError):
             raise NodeAPIError(HTTPStatus.BAD_GATEWAY.value, f"Stream terminated: {str(error)}")
