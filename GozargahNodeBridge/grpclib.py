@@ -55,7 +55,7 @@ class Node(GozargahNode):
         self._cleanup_temp_files()
         self._close_chan()
 
-    def grpc_to_http_status(grpc_status) -> int:
+    def grpc_to_http_status(grpc_status: Status) -> int:
         """Map gRPC status codes to HTTP status codes."""
         mapping = {
             Status.OK: HTTPStatus.OK.value,
@@ -83,7 +83,9 @@ class Node(GozargahNode):
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(HTTPStatus.REQUEST_TIMEOUT.value, "Request timed out")
         elif isinstance(error, GRPCError):
-            raise NodeAPIError(self.grpc_to_http_status(error.status), error.message)
+            grpc_status = error.status
+            http_status = self.grpc_to_http_status(grpc_status)
+            raise NodeAPIError(http_status, error.message)
         elif isinstance(error, StreamTerminatedError):
             raise NodeAPIError(HTTPStatus.BAD_GATEWAY.value, f"Stream terminated: {str(error)}")
         else:
