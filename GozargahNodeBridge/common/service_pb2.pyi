@@ -74,12 +74,19 @@ class StatRequest(_message.Message):
     def __init__(self, name: _Optional[str] = ..., reset: bool = ...) -> None: ...
 
 class OnlineStatResponse(_message.Message):
-    __slots__ = ("email", "value")
-    EMAIL_FIELD_NUMBER: _ClassVar[int]
-    VALUE_FIELD_NUMBER: _ClassVar[int]
-    email: str
-    value: int
-    def __init__(self, email: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    __slots__ = ("name", "ips")
+    class IpsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: int
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    IPS_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    ips: _containers.ScalarMap[str, int]
+    def __init__(self, name: _Optional[str] = ..., ips: _Optional[_Mapping[str, int]] = ...) -> None: ...
 
 class BackendStatsResponse(_message.Message):
     __slots__ = ("num_goroutine", "num_gc", "alloc", "total_alloc", "sys", "mallocs", "frees", "live_objects", "pause_total_ns", "uptime")
