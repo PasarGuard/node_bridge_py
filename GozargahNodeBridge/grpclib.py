@@ -58,15 +58,15 @@ class Node(GozargahNode):
     async def _handle_error(self, error: Exception):
         """Convert gRPC errors to NodeAPIError with HTTP status codes."""
         if isinstance(error, asyncio.TimeoutError):
-            raise NodeAPIError(HTTPStatus.REQUEST_TIMEOUT.value, "Request timed out")
+            raise NodeAPIError(-1, "Request timed out")
         elif isinstance(error, GRPCError):
             grpc_status = error.status
             http_status = grpc_to_http_status(grpc_status)
             raise NodeAPIError(http_status, error.message)
         elif isinstance(error, StreamTerminatedError):
-            raise NodeAPIError(HTTPStatus.BAD_GATEWAY.value, f"Stream terminated: {str(error)}")
+            raise NodeAPIError(-1, f"Stream terminated: {str(error)}")
         else:
-            raise NodeAPIError(HTTPStatus.INTERNAL_SERVER_ERROR.value, str(error))
+            raise NodeAPIError(0, str(error))
 
     async def _handle_grpc_request(self, method, request, timeout=15):
         """Handle a gRPC request and convert errors to NodeAPIError."""
