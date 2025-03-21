@@ -60,7 +60,7 @@ class GozargahNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def sync_users(self, users: list[service.User], timeout: int) -> service.Empty | None:
+    async def sync_users(self, users: list[service.User], flush_queue: bool, timeout: int) -> service.Empty | None:
         raise NotImplementedError
 
     @abstractmethod
