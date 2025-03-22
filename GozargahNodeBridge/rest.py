@@ -232,7 +232,7 @@ class Node(GozargahNode):
                 proto_message=service.StatRequest(name=email),
                 proto_response_class=service.OnlineStatResponse,
             )
-        
+
     async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
         await self.connected()
         async with self._node_lock.reader_lock:
@@ -327,7 +327,7 @@ class Node(GozargahNode):
                 # Cleanup if task is cancelled
                 user_task.cancel()
                 notify_task.cancel()
-                raise
+                return
 
             # Cancel pending tasks to avoid leaks
             for task in pending:

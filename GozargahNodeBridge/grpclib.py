@@ -1,5 +1,4 @@
 import asyncio
-from http import HTTPStatus
 
 from grpclib.client import Channel
 from grpclib.config import Configuration
@@ -225,7 +224,7 @@ class Node(GozargahNode):
                 request=service.StatRequest(name=email),
                 timeout=timeout,
             )
-    
+
     async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
         await self.connected()
 
@@ -289,7 +288,6 @@ class Node(GozargahNode):
     async def _sync_user(self):
         while True:
             health = await self.get_health()
-
             if health == Health.BROKEN:
                 await asyncio.sleep(5)
                 continue
@@ -297,38 +295,34 @@ class Node(GozargahNode):
                 return
 
             async with self._client.SyncUser.open(metadata=self._metadata) as stream:
-                async with self._lock.reader_lock:
-                    if self._user_queue is None or self._notify_queue is None:
-                        return
-
-                    user_task = asyncio.create_task(self._user_queue.get())
-                    notify_task = asyncio.create_task(self._notify_queue.get())
-
-                try:
-                    # Wait for first completed operation
-                    done, pending = await asyncio.wait([user_task, notify_task], return_when=asyncio.FIRST_COMPLETED)
-
-                except asyncio.CancelledError:
-                    # Cleanup if task is cancelled
-                    user_task.cancel()
-                    notify_task.cancel()
-                    raise
-
-                for task in pending:
-                    task.cancel()
-
-                if notify_task in done:
-                    continue
-
-                # Handle UserChan message
-                if user_task in done:
-                    user = user_task.result()
-                    if user is None:
-                        continue
+                while True:
+                    async with self._lock.reader_lock:
+                        if self._user_queue is None or self._notify_queue is None:
+                            return
+                        user_task = asyncio.create_task(self._user_queue.get())
+                        notify_task = asyncio.create_task(self._notify_queue.get())
 
                     try:
-                        # Send the user through the gRPC stream
-                        await stream.send_message(user)
-                    except Exception:
-                        await asyncio.sleep(5)
-                        continue
+                        done, pending = await asyncio.wait(
+                            [user_task, notify_task], return_when=asyncio.FIRST_COMPLETED
+                        )
+                    except asyncio.CancelledError:
+                        user_task.cancel()
+                        notify_task.cancel()
+                        raise
+
+                    for task in pending:
+                        task.cancel()
+
+                    if notify_task in done:
+                        continue  # Handle notify event
+
+                    if user_task in done:
+                        user = user_task.result()
+                        if user is None:
+                            continue
+
+                        try:
+                            await stream.send_message(user)
+                        except Exception:
+                            break
