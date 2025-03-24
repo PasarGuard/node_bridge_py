@@ -240,7 +240,7 @@ class Node(GozargahNode):
     ) -> service.Empty | None:
         await self.connected()
         if flush_queue:
-            self.flush_user_queue()
+            await self.flush_user_queue()
 
         async with self._node_lock.writer_lock:
             return await self._handle_grpc_request(
