@@ -50,7 +50,6 @@ class Controller:
             self.ctx.set_alpn_protocols(["h2"])
             self.ctx.load_verify_locations(cafile=ca_path)
             self.ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
-            self.ctx.check_hostname = False
             self.ctx.verify_mode = ssl.CERT_REQUIRED
 
         except (ssl.SSLError, IOError) as e:
