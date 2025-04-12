@@ -1,9 +1,21 @@
 """
 Gozargah Node Bridge
-A Python library for connecting to Gozargah nodes.
+
+A Python library for interfacing with Gozargah nodes via gRPC or REST protocols.
+This library abstracts communication with gozargah-node, allowing for
+user management, proxy configuration, and health monitoring through a unified interface.
+
+Features:
+- Support for both gRPC and REST connections
+- SSL/TLS secure communication
+- High-level API for common node operations
+- Extensible with custom metadata via the `extra` argument
+
+Author: M03ED
+Version: 0.0.31
 """
 
-__version__ = "0.0.30"
+__version__ = "0.0.31"
 __author__ = "M03ED"
 
 
@@ -31,29 +43,30 @@ def create_node(
     extra: dict = {},
 ) -> GozargahNode:
     """
-    Create and initialize a node instance.
+    Create and initialize a Gozargah node instance using the specified connection type.
+
+    This function abstracts the creation of either a gRPC-based or REST-based node,
+    handling the underlying setup and returning a ready-to-use node object.
 
     Args:
-         connection (NodeType): The type of connection to use for the node.
-             Must be `NodeType.GRPC` or `NodeType.REST`.
-         address (str): The address of the node.
-             This must be a valid IPv4, IPv6 or valid domain.
-         port (int): The port number for the node connection.
-         client_cert (str): The SSL certificate as a string (not a file path).
-         client_key (str): The SSL private key as a string (not a file path).
-         server_ca (str): The server SSL certificate as a string (not a file path).
-         extra (dict): extra data you need in production.
+        connection (NodeType): Type of node connection. Must be `NodeType.grpc` or `NodeType.rest`.
+        address (str): IP address or domain name of the node.
+        port (int): Port number used to connect to the node.
+        server_ca (str): The server's SSL certificate as a string (PEM format).
+        api_key (str): API key used for authentication with the node.
+        max_logs (int, optional): Maximum number of logs to retain. Defaults to 1000.
+        extra (dict, optional): Optional dictionary to pass custom metadata or configuration.
 
     Returns:
-        Node | None: A `Node` instance if successfully created; otherwise, `None`.
+        GozargahNode: An initialized node instance ready for API operations.
 
     Raises:
-        NodeAPIError: If the `connection` failed.
+        ValueError: If the provided connection type is invalid.
+        NodeAPIError: If the node connection or initialization fails.
 
     Note:
-        - The `address` must be a valid IP address or domain.
-        - The `client_cert`, `client_key` and `server_ca` should be the content of the SSL certificate
-          and private key as strings, not file paths.
+        - SSL certificate values should be passed as strings, not file paths.
+        - Use `extra` to inject any environment-specific settings or context.
     """
 
     if connection is NodeType.grpc:
