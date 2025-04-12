@@ -16,18 +16,14 @@ class Empty(_message.Message):
     def __init__(self) -> None: ...
 
 class BaseInfoResponse(_message.Message):
-    __slots__ = ("started", "core_version", "node_version", "session_id", "extra")
+    __slots__ = ("started", "core_version", "node_version")
     STARTED_FIELD_NUMBER: _ClassVar[int]
     CORE_VERSION_FIELD_NUMBER: _ClassVar[int]
     NODE_VERSION_FIELD_NUMBER: _ClassVar[int]
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
-    EXTRA_FIELD_NUMBER: _ClassVar[int]
     started: bool
     core_version: str
     node_version: str
-    session_id: str
-    extra: str
-    def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ..., session_id: _Optional[str] = ..., extra: _Optional[str] = ...) -> None: ...
+    def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ...) -> None: ...
 
 class Backend(_message.Message):
     __slots__ = ("type", "config", "users", "keep_alive")
