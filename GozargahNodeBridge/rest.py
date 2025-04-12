@@ -13,23 +13,21 @@ class Node(GozargahNode):
         self,
         address: str,
         port: int,
-        client_cert: str,
-        client_key: str,
         server_ca: str,
+        api_key: str,
         extra: dict | None = None,
         max_logs: int = 1000,
     ):
-        super().__init__(client_cert, client_key, server_ca, extra, max_logs)
+        super().__init__(server_ca, api_key, extra, max_logs)
 
         url = f"https://{address.strip('/')}:{port}/"
 
         self._client = httpx.AsyncClient(
             http2=True,
             verify=self.ctx,
-            headers={"Content-Type": "application/x-protobuf"},
+            headers={"Content-Type": "application/x-protobuf", "x-api-key": api_key},
             base_url=url,
             timeout=httpx.Timeout(None),
-            limits=httpx.Limits(max_keepalive_connections=1),
         )
 
         self._node_lock = RWLock()
@@ -121,7 +119,6 @@ class Node(GozargahNode):
                 proto_response_class=service.BaseInfoResponse,
             )
 
-            self._client.headers["Authorization"] = f"Bearer {response.session_id}"
             await self.connect(
                 response.node_version,
                 response.core_version,

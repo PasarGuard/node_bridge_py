@@ -25,9 +25,8 @@ def create_node(
     connection: NodeType,
     address: str,
     port: int,
-    client_cert: str,
-    client_key: str,
     server_ca: str,
+    api_key: str,
     max_logs: int = 1000,
     extra: dict = {},
 ) -> GozargahNode:
@@ -61,9 +60,8 @@ def create_node(
         node = GrpcNode(
             address=address,
             port=port,
-            client_cert=client_cert,
-            client_key=client_key,
             server_ca=server_ca,
+            api_key=api_key,
             extra=extra,
             max_logs=max_logs,
         )
@@ -72,9 +70,8 @@ def create_node(
         node = RestNode(
             address=address,
             port=port,
-            client_cert=client_cert,
-            client_key=client_key,
             server_ca=server_ca,
+            api_key=api_key,
             extra=extra,
             max_logs=max_logs,
         )

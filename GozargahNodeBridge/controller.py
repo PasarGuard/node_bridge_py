@@ -1,6 +1,7 @@
 import ssl
 import asyncio
 from enum import IntEnum
+from uuid import UUID
 from pathlib import Path
 
 from aiorwlock import RWLock
@@ -33,24 +34,20 @@ class Health(IntEnum):
 
 
 class Controller:
-    def __init__(
-        self, client_cert: str, client_key: str, server_ca: str, extra: dict | None = None, max_logs: int = 1000
-    ):
+    def __init__(self, server_ca: str, api_key: str, extra: dict | None = None, max_logs: int = 1000):
         self.max_logs = max_logs
         self._temp_files = []
         if extra is None:
             extra = {}
         try:
             ca_path = string_to_temp_file(server_ca)
-            cert_path = string_to_temp_file(client_cert)
-            key_path = string_to_temp_file(client_key)
-            self._temp_files.extend([Path(ca_path), Path(cert_path), Path(key_path)])
+            self._temp_files.extend([Path(ca_path)])
+            self.api_key = UUID(api_key)
 
             self.ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
             self.ctx.set_alpn_protocols(["h2"])
             self.ctx.load_verify_locations(cafile=ca_path)
-            self.ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
-            self.ctx.verify_mode = ssl.CERT_REQUIRED
+            self.ctx.check_hostname = True
 
         except (ssl.SSLError, IOError) as e:
             self._cleanup_temp_files()

@@ -3,20 +3,13 @@ import asyncio
 import GozargahNodeBridge as Bridge
 
 address = "172.27.158.135"
-port = 62050
-client_cert_file = "certs/ssl_client_cert.pem"
-client_key_file = "certs/ssl_client_key.pem"
+port = 2096
 server_ca_file = "certs/ssl_cert.pem"
 config_file = "config/xray.json"
+api_key = "d04d8680-942d-4365-992f-9f482275691d"
 
 with open(config_file, "r") as f:
     config = f.read()
-
-with open(client_cert_file, "r") as f:
-    client_cert_content = f.read()
-
-with open(client_key_file, "r") as f:
-    client_key_content = f.read()
 
 with open(server_ca_file, "r") as f:
     server_ca_content = f.read()
@@ -27,9 +20,8 @@ async def main():
         connection=Bridge.NodeType.grpc,
         address=address,
         port=port,
-        client_cert=client_cert_content,
-        client_key=client_key_content,
         server_ca=server_ca_content,
+        api_key=api_key,
         max_logs=100,
         extra={"id": 1},
     )

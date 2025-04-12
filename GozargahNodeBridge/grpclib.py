@@ -17,21 +17,21 @@ class Node(GozargahNode):
         self,
         address: str,
         port: int,
-        client_cert: str,
-        client_key: str,
         server_ca: str,
+        api_key: str,
         extra: dict | None = None,
         max_logs: int = 1000,
     ):
-        super().__init__(client_cert, client_key, server_ca, extra, max_logs)
+        super().__init__(server_ca, api_key, extra, max_logs)
+
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
             self._client = service_grpc.NodeServiceStub(self.channel)
+            self._metadata = {"x-api-key": api_key}
         except Exception as e:
             self._cleanup_temp_files()
             raise NodeAPIError(-1, f"Channel initialization failed: {str(e)}")
 
-        self._metadata = None
         self._node_lock = RWLock()
 
     def _close_chan(self):
@@ -106,7 +106,6 @@ class Node(GozargahNode):
                     asyncio.create_task(self._fetch_logs()),
                 ],
             )
-            self._metadata = {"authorization": f"Bearer {info.session_id}"}
             return info
 
     async def stop(self, timeout: int = 10) -> None:
