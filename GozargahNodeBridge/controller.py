@@ -52,6 +52,10 @@ class Controller:
         except (ssl.SSLError, IOError) as e:
             self._cleanup_temp_files()
             raise NodeAPIError(-1, f"SSL initialization failed: {str(e)}")
+        
+        except ValueError as e:
+            self._cleanup_temp_files()
+            raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
 
         self._health = Health.NOT_CONNECTED
         self._user_queue: asyncio.Queue[User] | None = None
