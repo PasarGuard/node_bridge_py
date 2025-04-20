@@ -3,7 +3,6 @@ import asyncio
 from grpclib.client import Channel
 from grpclib.config import Configuration
 from grpclib.exceptions import GRPCError, StreamTerminatedError
-from aiorwlock import RWLock
 
 from GozargahNodeBridge.common import service_pb2 as service
 from GozargahNodeBridge.common import service_grpc
@@ -32,7 +31,7 @@ class Node(GozargahNode):
             self._cleanup_temp_files()
             raise NodeAPIError(-1, f"Channel initialization failed: {str(e)}")
 
-        self._node_lock = RWLock()
+        self._node_lock = asyncio.Lock()
 
     def _close_chan(self):
         """Close gRPC channel"""
@@ -80,6 +79,7 @@ class Node(GozargahNode):
         backend_type: service.BackendType,
         users: list[service.User],
         keep_alive: int = 0,
+        ghather_logs: bool = True,
         timeout: int = 15,
     ) -> service.BaseInfoResponse | None:
         """Start the node"""
@@ -91,20 +91,19 @@ class Node(GozargahNode):
 
         req = service.Backend(type=backend_type, config=config, users=users, keep_alive=keep_alive)
 
-        async with self._node_lock.writer_lock:
+        async with self._node_lock:
             info = await self._handle_grpc_request(
                 method=self._client.Start,
                 request=req,
                 timeout=timeout,
             )
+            tasks = [asyncio.create_task(self._check_node_health()), asyncio.create_task(self._sync_user())]
+            if ghather_logs:
+                tasks.append(asyncio.create_task(self._fetch_logs()))
             await self.connect(
                 info.node_version,
                 info.core_version,
-                [
-                    asyncio.create_task(self._check_node_health()),
-                    asyncio.create_task(self._sync_user()),
-                    asyncio.create_task(self._fetch_logs()),
-                ],
+                tasks,
             )
             return info
 
@@ -113,7 +112,7 @@ class Node(GozargahNode):
         if await self.get_health() is Health.NOT_CONNECTED:
             return
 
-        async with self._node_lock.writer_lock:
+        async with self._node_lock:
             await self.disconnect()
 
             await self._handle_grpc_request(
@@ -125,123 +124,89 @@ class Node(GozargahNode):
             self._metadata = None
 
     async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetBaseInfo,
-                request=service.Empty(),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetBaseInfo,
+            request=service.Empty(),
+            timeout=timeout,
+        )
 
     async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetSystemStats,
-                request=service.Empty(),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetSystemStats,
+            request=service.Empty(),
+            timeout=timeout,
+        )
 
     async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetBackendStats,
-                request=service.Empty(),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetBackendStats,
+            request=service.Empty(),
+            timeout=timeout,
+        )
 
     async def get_outbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetOutboundsStats,
-                request=service.StatRequest(reset=reset),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetOutboundsStats,
+            request=service.StatRequest(reset=reset),
+            timeout=timeout,
+        )
 
     async def get_outbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetOutboundStats,
-                request=service.StatRequest(name=tag, reset=reset),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetOutboundStats,
+            request=service.StatRequest(name=tag, reset=reset),
+            timeout=timeout,
+        )
 
     async def get_inbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetInboundsStats,
-                request=service.StatRequest(reset=reset),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetInboundsStats,
+            request=service.StatRequest(reset=reset),
+            timeout=timeout,
+        )
 
     async def get_inbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetInboundStats,
-                request=service.StatRequest(name=tag, reset=reset),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetInboundStats,
+            request=service.StatRequest(name=tag, reset=reset),
+            timeout=timeout,
+        )
 
     async def get_users_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetUsersStats,
-                request=service.StatRequest(reset=reset),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetUsersStats,
+            request=service.StatRequest(reset=reset),
+            timeout=timeout,
+        )
 
     async def get_user_stats(self, email: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetUserStats,
-                request=service.StatRequest(name=email, reset=reset),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetUserStats,
+            request=service.StatRequest(name=email, reset=reset),
+            timeout=timeout,
+        )
 
     async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetUserOnlineStats,
-                request=service.StatRequest(name=email),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetUserOnlineStats,
+            request=service.StatRequest(name=email),
+            timeout=timeout,
+        )
 
     async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
-        await self.connected()
-
-        async with self._node_lock.reader_lock:
-            return await self._handle_grpc_request(
-                method=self._client.GetUserOnlineIpListStats,
-                request=service.StatRequest(name=email),
-                timeout=timeout,
-            )
+        return await self._handle_grpc_request(
+            method=self._client.GetUserOnlineIpListStats,
+            request=service.StatRequest(name=email),
+            timeout=timeout,
+        )
 
     async def sync_users(
         self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
     ) -> service.Empty | None:
-        await self.connected()
         if flush_queue:
             await self.flush_user_queue()
 
-        async with self._node_lock.writer_lock:
+        async with self._node_lock:
             return await self._handle_grpc_request(
                 method=self._client.SyncUsers,
                 request=service.Users(users=users),

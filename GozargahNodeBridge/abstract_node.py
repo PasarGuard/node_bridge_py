@@ -7,7 +7,13 @@ from GozargahNodeBridge.controller import Controller
 class GozargahNode(Controller, ABC):
     @abstractmethod
     async def start(
-        self, config: str, backend_type: service.BackendType, users: list[service.User], keep_alive: int, timeout: int
+        self,
+        config: str,
+        backend_type: service.BackendType,
+        users: list[service.User],
+        keep_alive: int,
+        ghather_logs: bool,
+        timeout: int,
     ) -> service.BaseInfoResponse | None:
         raise NotImplementedError
 

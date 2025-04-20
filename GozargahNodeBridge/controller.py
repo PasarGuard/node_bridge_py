@@ -58,9 +58,9 @@ class Controller:
             raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
 
         self._health = Health.NOT_CONNECTED
-        self._user_queue: asyncio.Queue[User] | None = None
-        self._logs_queue: RollingQueue[str] | None = None
-        self._notify_queue: asyncio.Queue | None = None
+        self._user_queue = asyncio.Queue()
+        self._notify_queue = asyncio.Queue()
+        self._logs_queue = RollingQueue(self.max_logs)
         self._tasks: list[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
@@ -91,32 +91,20 @@ class Controller:
         async with self._lock.reader_lock:
             return self._health
 
-    async def connected(self) -> bool:
-        health = await self.get_health()
-        if health is Health.NOT_CONNECTED:
-            raise NodeAPIError(code=-3, detail="Node is not connected")
-        elif health is Health.INVALID:
-            raise NodeAPIError(code=-4, detail="Invalid node")
-        return True
-
     async def update_user(self, user: User):
-        await self.connected()
         async with self._lock.reader_lock:
             if self._user_queue:
                 await self._user_queue.put(user)
 
     async def flush_user_queue(self):
-        await self.connected()
         async with self._lock.writer_lock:
             self._user_queue.empty()
 
     async def get_logs(self) -> asyncio.Queue | None:
-        await self.connected()
         async with self._lock.reader_lock:
             return self._logs_queue
 
     async def flush_logs_queue(self):
-        await self.connected()
         async with self._lock.writer_lock:
             self._logs_queue.empty()
 
@@ -138,9 +126,6 @@ class Controller:
         if tasks is None:
             tasks = []
         async with self._lock.writer_lock:
-            self._user_queue = asyncio.Queue()
-            self._notify_queue = asyncio.Queue()
-            self._logs_queue = RollingQueue(self.max_logs)
             self._tasks = tasks
             self._node_version = node_version
             self._core_version = core_version
@@ -158,15 +143,15 @@ class Controller:
 
             if self._user_queue:
                 await self._user_queue.put(None)
-                self._user_queue = None
+                self._user_queue = asyncio.Queue()
 
             if self._notify_queue:
                 await self._notify_queue.put(None)
-                self._notify_queue = None
+                self._notify_queue = asyncio.Queue()
 
             if self._logs_queue:
                 await self._logs_queue.put(None)
-                self._logs_queue = None
+                self._logs_queue = RollingQueue(self.max_logs)
 
             self._node_version = ""
             self._core_version = ""

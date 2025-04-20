@@ -1,8 +1,8 @@
 import asyncio
-import httpx
 
-from aiorwlock import RWLock
+import httpx
 from google.protobuf.message import Message, DecodeError
+
 from GozargahNodeBridge.controller import NodeAPIError, Health
 from GozargahNodeBridge.common import service_pb2 as service
 from GozargahNodeBridge.abstract_node import GozargahNode
@@ -30,7 +30,7 @@ class Node(GozargahNode):
             timeout=httpx.Timeout(None),
         )
 
-        self._node_lock = RWLock()
+        self._node_lock = asyncio.Lock()
 
     async def __aenter__(self):
         return self
@@ -102,6 +102,7 @@ class Node(GozargahNode):
         backend_type: service.BackendType,
         users: list[service.User],
         keep_alive: int = 0,
+        ghather_logs: bool = True,
         timeout: int = 15,
     ):
         health = await self.get_health()
@@ -110,7 +111,7 @@ class Node(GozargahNode):
         elif health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
-        async with self._node_lock.writer_lock:
+        async with self._node_lock:
             response = await self._make_request(
                 method="POST",
                 endpoint="start",
@@ -119,14 +120,13 @@ class Node(GozargahNode):
                 proto_response_class=service.BaseInfoResponse,
             )
 
+            tasks = [asyncio.create_task(self._check_node_health()), asyncio.create_task(self._sync_user())]
+            if ghather_logs:
+                tasks.append(asyncio.create_task(self._fetch_logs()))
             await self.connect(
                 response.node_version,
                 response.core_version,
-                [
-                    asyncio.create_task(self._check_node_health()),
-                    asyncio.create_task(self._sync_user()),
-                    asyncio.create_task(self._fetch_logs()),
-                ],
+                tasks,
             )
 
         return response
@@ -134,121 +134,98 @@ class Node(GozargahNode):
     async def stop(self, timeout: int = 10) -> None:
         if await self.get_health() is Health.NOT_CONNECTED:
             return
-        async with self._node_lock.writer_lock:
+        async with self._node_lock:
             await self.disconnect()
             await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
 
     async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(method="GET", endpoint="info", timeout=timeout)
+        return await self._make_request(method="GET", endpoint="info", timeout=timeout)
 
     async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(method="GET", endpoint="stats/system", timeout=timeout)
+        return await self._make_request(method="GET", endpoint="stats/system", timeout=timeout)
 
     async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(method="GET", endpoint="stats/backend", timeout=timeout)
+        return await self._make_request(method="GET", endpoint="stats/backend", timeout=timeout)
 
     async def get_outbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/outbounds",
-                timeout=timeout,
-                proto_message=service.StatRequest(reset=reset),
-                proto_response_class=service.StatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/outbounds",
+            timeout=timeout,
+            proto_message=service.StatRequest(reset=reset),
+            proto_response_class=service.StatResponse,
+        )
 
     async def get_outbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/outbound",
-                timeout=timeout,
-                proto_message=service.StatRequest(reset=reset, name=tag),
-                proto_response_class=service.StatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/outbound",
+            timeout=timeout,
+            proto_message=service.StatRequest(reset=reset, name=tag),
+            proto_response_class=service.StatResponse,
+        )
 
     async def get_inbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/inbounds",
-                timeout=timeout,
-                proto_message=service.StatRequest(reset=reset),
-                proto_response_class=service.StatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/inbounds",
+            timeout=timeout,
+            proto_message=service.StatRequest(reset=reset),
+            proto_response_class=service.StatResponse,
+        )
 
     async def get_inbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/inbound",
-                timeout=timeout,
-                proto_message=service.StatRequest(reset=reset, name=tag),
-                proto_response_class=service.StatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/inbound",
+            timeout=timeout,
+            proto_message=service.StatRequest(reset=reset, name=tag),
+            proto_response_class=service.StatResponse,
+        )
 
     async def get_users_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/users",
-                timeout=timeout,
-                proto_message=service.StatRequest(reset=reset),
-                proto_response_class=service.StatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/users",
+            timeout=timeout,
+            proto_message=service.StatRequest(reset=reset),
+            proto_response_class=service.StatResponse,
+        )
 
     async def get_user_stats(self, email: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/user",
-                timeout=timeout,
-                proto_message=service.StatRequest(reset=reset, name=email),
-                proto_response_class=service.StatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/user",
+            timeout=timeout,
+            proto_message=service.StatRequest(reset=reset, name=email),
+            proto_response_class=service.StatResponse,
+        )
 
     async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/user/online",
-                timeout=timeout,
-                proto_message=service.StatRequest(name=email),
-                proto_response_class=service.OnlineStatResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/user/online",
+            timeout=timeout,
+            proto_message=service.StatRequest(name=email),
+            proto_response_class=service.OnlineStatResponse,
+        )
 
     async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
-        await self.connected()
-        async with self._node_lock.reader_lock:
-            return await self._make_request(
-                method="GET",
-                endpoint="stats/user/online_ip",
-                timeout=timeout,
-                proto_message=service.StatRequest(name=email),
-                proto_response_class=service.StatsOnlineIpListResponse,
-            )
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/user/online_ip",
+            timeout=timeout,
+            proto_message=service.StatRequest(name=email),
+            proto_response_class=service.StatsOnlineIpListResponse,
+        )
 
     async def sync_users(
         self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
     ) -> service.Empty | None:
-        await self.connected()
         if flush_queue:
             await self.flush_user_queue()
 
-        async with self._node_lock.writer_lock:
+        async with self._node_lock:
             return await self._make_request(
                 method="POST",
                 endpoint="users/sync",
