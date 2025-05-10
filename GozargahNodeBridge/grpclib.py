@@ -121,8 +121,6 @@ class Node(GozargahNode):
                 timeout=timeout,
             )
 
-            self._metadata = None
-
     async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetBaseInfo,
