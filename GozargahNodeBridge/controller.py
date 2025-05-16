@@ -108,12 +108,10 @@ class Controller:
         async with self._lock.writer_lock:
             self._logs_queue.empty()
 
-    @property
     async def node_version(self) -> str:
         async with self._lock.reader_lock:
             return self._node_version
 
-    @property
     async def core_version(self) -> str:
         async with self._lock.reader_lock:
             return self._core_version
