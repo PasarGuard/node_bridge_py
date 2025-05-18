@@ -53,7 +53,7 @@ class Controller:
             self._cleanup_temp_files()
             raise NodeAPIError(-1, f"SSL initialization failed: {str(e)}")
 
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
             self._cleanup_temp_files()
             raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
 

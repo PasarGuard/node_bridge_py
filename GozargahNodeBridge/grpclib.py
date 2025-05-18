@@ -223,13 +223,13 @@ class Node(GozargahNode):
                 if last_health != Health.BROKEN:
                     await self.set_health(Health.BROKEN)
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(10)
 
     async def _fetch_logs(self):
         while True:
             health = await self.get_health()
             if health == Health.BROKEN:
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
                 continue
             elif health == Health.NOT_CONNECTED:
                 return
@@ -244,14 +244,14 @@ class Node(GozargahNode):
                         await self._logs_queue.put(log.detail)
 
             except Exception:
-                await asyncio.sleep(3)
+                await asyncio.sleep(10)
                 continue
 
     async def _sync_user(self):
         while True:
             health = await self.get_health()
             if health == Health.BROKEN:
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
                 continue
             elif health == Health.NOT_CONNECTED:
                 return
