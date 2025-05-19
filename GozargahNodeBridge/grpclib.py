@@ -28,7 +28,6 @@ class Node(GozargahNode):
             self._client = service_grpc.NodeServiceStub(self.channel)
             self._metadata = {"x-api-key": api_key}
         except Exception as e:
-            self._cleanup_temp_files()
             raise NodeAPIError(-1, f"Channel initialization failed: {str(e)}")
 
         self._node_lock = asyncio.Lock()
@@ -46,11 +45,9 @@ class Node(GozargahNode):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
-        self._cleanup_temp_files()
         self._close_chan()
 
     def __del__(self):
-        self._cleanup_temp_files()
         self._close_chan()
 
     async def _handle_error(self, error: Exception):

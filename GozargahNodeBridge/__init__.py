@@ -12,10 +12,10 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: M03ED
-Version: 0.0.37
+Version: 0.0.38
 """
 
-__version__ = "0.0.37"
+__version__ = "0.0.38"
 __author__ = "M03ED"
 
 

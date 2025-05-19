@@ -38,10 +38,6 @@ class Node(GozargahNode):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
         await self._client.aclose()
-        self._cleanup_temp_files()
-
-    def __del__(self):
-        self._cleanup_temp_files()
 
     def _serialize_protobuf(self, proto_message: Message) -> bytes:
         """Serialize a protobuf message to bytes."""

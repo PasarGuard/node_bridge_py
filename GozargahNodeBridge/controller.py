@@ -2,12 +2,10 @@ import ssl
 import asyncio
 from enum import IntEnum
 from uuid import UUID
-from pathlib import Path
 
 from aiorwlock import RWLock
 
 from GozargahNodeBridge.common.service_pb2 import User
-from GozargahNodeBridge.utils import string_to_temp_file
 
 
 class RollingQueue(asyncio.Queue):
@@ -36,25 +34,20 @@ class Health(IntEnum):
 class Controller:
     def __init__(self, server_ca: str, api_key: str, extra: dict | None = None, max_logs: int = 1000):
         self.max_logs = max_logs
-        self._temp_files = []
         if extra is None:
             extra = {}
         try:
-            ca_path = string_to_temp_file(server_ca)
-            self._temp_files.extend([Path(ca_path)])
             self.api_key = UUID(api_key)
 
             self.ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
             self.ctx.set_alpn_protocols(["h2"])
-            self.ctx.load_verify_locations(cafile=ca_path)
+            self.ctx.load_verify_locations(cadata=server_ca)
             self.ctx.check_hostname = True
 
-        except (ssl.SSLError, IOError) as e:
-            self._cleanup_temp_files()
+        except ssl.SSLError as e:
             raise NodeAPIError(-1, f"SSL initialization failed: {str(e)}")
 
         except (ValueError, TypeError) as e:
-            self._cleanup_temp_files()
             raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
 
         self._health = Health.NOT_CONNECTED
@@ -66,17 +59,6 @@ class Controller:
         self._core_version = ""
         self._extra = extra
         self._lock = RWLock()
-
-    def _cleanup_temp_files(self):
-        """Clean up temporary certificate files"""
-        for path in self._temp_files:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-    def __del__(self):
-        self._cleanup_temp_files()
 
     async def set_health(self, health: Health):
         async with self._lock.writer_lock:
