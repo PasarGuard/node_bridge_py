@@ -34,27 +34,9 @@ class GozargahNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_outbounds_stats(self, reset: bool, timeout: int) -> service.StatResponse | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_outbound_stats(self, tag: str, reset: bool, timeout: int) -> service.StatResponse | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_inbounds_stats(self, reset: bool, timeout: int) -> service.StatResponse | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_inbound_stats(self, tag: str, reset: bool, timeout: int) -> service.StatResponse | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_users_stats(self, reset: bool, timeout: int) -> service.StatResponse | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_user_stats(self, email: str, reset: bool, timeout: int) -> service.StatResponse | None:
+    async def get_stats(
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+    ) -> service.StatResponse | None:
         raise NotImplementedError
 
     @abstractmethod

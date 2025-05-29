@@ -143,57 +143,14 @@ class Node(GozargahNode):
     async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
         return await self._make_request(method="GET", endpoint="stats/backend", timeout=timeout)
 
-    async def get_outbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
+    async def get_stats(
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+    ) -> service.StatResponse | None:
         return await self._make_request(
             method="GET",
-            endpoint="stats/outbounds",
+            endpoint="stats",
             timeout=timeout,
-            proto_message=service.StatRequest(reset=reset),
-            proto_response_class=service.StatResponse,
-        )
-
-    async def get_outbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._make_request(
-            method="GET",
-            endpoint="stats/outbound",
-            timeout=timeout,
-            proto_message=service.StatRequest(reset=reset, name=tag),
-            proto_response_class=service.StatResponse,
-        )
-
-    async def get_inbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._make_request(
-            method="GET",
-            endpoint="stats/inbounds",
-            timeout=timeout,
-            proto_message=service.StatRequest(reset=reset),
-            proto_response_class=service.StatResponse,
-        )
-
-    async def get_inbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._make_request(
-            method="GET",
-            endpoint="stats/inbound",
-            timeout=timeout,
-            proto_message=service.StatRequest(reset=reset, name=tag),
-            proto_response_class=service.StatResponse,
-        )
-
-    async def get_users_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._make_request(
-            method="GET",
-            endpoint="stats/users",
-            timeout=timeout,
-            proto_message=service.StatRequest(reset=reset),
-            proto_response_class=service.StatResponse,
-        )
-
-    async def get_user_stats(self, email: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._make_request(
-            method="GET",
-            endpoint="stats/user",
-            timeout=timeout,
-            proto_message=service.StatRequest(reset=reset, name=email),
+            proto_message=service.StatRequest(reset=reset, name=name, type=stat_type),
             proto_response_class=service.StatResponse,
         )
 

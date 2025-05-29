@@ -36,7 +36,7 @@ async def main():
 
     await asyncio.sleep(5)
 
-    stats = await node.get_outbounds_stats()
+    stats = await node.get_stats(0)
     print(stats)
 
     logs = await node.get_logs()

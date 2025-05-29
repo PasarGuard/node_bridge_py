@@ -1,15 +1,7 @@
-import tempfile
-
 from grpc import StatusCode as Status
 from http import HTTPStatus
 
 from GozargahNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks
-
-
-def string_to_temp_file(content: str):
-    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-        f.write(content)
-        return f.name
 
 
 def create_user(email: str, proxies: Proxy, inbounds: list[str]) -> User:

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\'GozargahNodeBridge/common/service.proto\x12\x07service\"\x07\n\x05\x45mpty\"O\n\x10\x42\x61seInfoResponse\x12\x0f\n\x07started\x18\x01 \x01(\x08\x12\x14\n\x0c\x63ore_version\x18\x02 \x01(\t\x12\x14\n\x0cnode_version\x18\x03 \x01(\t\"o\n\x07\x42\x61\x63kend\x12\"\n\x04type\x18\x01 \x01(\x0e\x32\x14.service.BackendType\x12\x0e\n\x06\x63onfig\x18\x02 \x01(\t\x12\x1c\n\x05users\x18\x03 \x03(\x0b\x32\r.service.User\x12\x12\n\nkeep_alive\x18\x04 \x01(\x04\"\x15\n\x03Log\x12\x0e\n\x06\x64\x65tail\x18\x01 \x01(\t\"?\n\x04Stat\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0c\n\x04link\x18\x03 \x01(\t\x12\r\n\x05value\x18\x04 \x01(\x03\",\n\x0cStatResponse\x12\x1c\n\x05stats\x18\x01 \x03(\x0b\x32\r.service.Stat\"*\n\x0bStatRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05reset\x18\x02 \x01(\x08\"1\n\x12OnlineStatResponse\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x03\"\x8f\x01\n\x19StatsOnlineIpListResponse\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x38\n\x03ips\x18\x02 \x03(\x0b\x32+.service.StatsOnlineIpListResponse.IpsEntry\x1a*\n\x08IpsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x03:\x02\x38\x01\"\xcc\x01\n\x14\x42\x61\x63kendStatsResponse\x12\x15\n\rnum_goroutine\x18\x01 \x01(\r\x12\x0e\n\x06num_gc\x18\x02 \x01(\r\x12\r\n\x05\x61lloc\x18\x03 \x01(\x04\x12\x13\n\x0btotal_alloc\x18\x04 \x01(\x04\x12\x0b\n\x03sys\x18\x05 \x01(\x04\x12\x0f\n\x07mallocs\x18\x06 \x01(\x04\x12\r\n\x05\x66rees\x18\x07 \x01(\x04\x12\x14\n\x0clive_objects\x18\x08 \x01(\x04\x12\x16\n\x0epause_total_ns\x18\t \x01(\x04\x12\x0e\n\x06uptime\x18\n \x01(\r\"\xa4\x01\n\x13SystemStatsResponse\x12\x11\n\tmem_total\x18\x01 \x01(\x04\x12\x10\n\x08mem_used\x18\x02 \x01(\x04\x12\x11\n\tcpu_cores\x18\x03 \x01(\x04\x12\x11\n\tcpu_usage\x18\x04 \x01(\x01\x12 \n\x18incoming_bandwidth_speed\x18\x05 \x01(\x04\x12 \n\x18outgoing_bandwidth_speed\x18\x06 \x01(\x04\"\x13\n\x05Vmess\x12\n\n\x02id\x18\x01 \x01(\t\"!\n\x05Vless\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04\x66low\x18\x02 \x01(\t\"\x1a\n\x06Trojan\x12\x10\n\x08password\x18\x01 \x01(\t\"/\n\x0bShadowsocks\x12\x10\n\x08password\x18\x01 \x01(\t\x12\x0e\n\x06method\x18\x02 \x01(\t\"\x91\x01\n\x05Proxy\x12\x1d\n\x05vmess\x18\x01 \x01(\x0b\x32\x0e.service.Vmess\x12\x1d\n\x05vless\x18\x02 \x01(\x0b\x32\x0e.service.Vless\x12\x1f\n\x06trojan\x18\x03 \x01(\x0b\x32\x0f.service.Trojan\x12)\n\x0bshadowsocks\x18\x04 \x01(\x0b\x32\x14.service.Shadowsocks\"H\n\x04User\x12\r\n\x05\x65mail\x18\x01 \x01(\t\x12\x1f\n\x07proxies\x18\x02 \x01(\x0b\x32\x0e.service.Proxy\x12\x10\n\x08inbounds\x18\x03 \x03(\t\"%\n\x05Users\x12\x1c\n\x05users\x18\x01 \x03(\x0b\x32\r.service.User*\x17\n\x0b\x42\x61\x63kendType\x12\x08\n\x04XRAY\x10\x00\x32\xea\x07\n\x0bNodeService\x12\x36\n\x05Start\x12\x10.service.Backend\x1a\x19.service.BaseInfoResponse\"\x00\x12(\n\x04Stop\x12\x0e.service.Empty\x1a\x0e.service.Empty\"\x00\x12:\n\x0bGetBaseInfo\x12\x0e.service.Empty\x1a\x19.service.BaseInfoResponse\"\x00\x12+\n\x07GetLogs\x12\x0e.service.Empty\x1a\x0c.service.Log\"\x00\x30\x01\x12@\n\x0eGetSystemStats\x12\x0e.service.Empty\x1a\x1c.service.SystemStatsResponse\"\x00\x12\x42\n\x0fGetBackendStats\x12\x0e.service.Empty\x1a\x1d.service.BackendStatsResponse\"\x00\x12\x42\n\x11GetOutboundsStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12\x41\n\x10GetOutboundStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12\x41\n\x10GetInboundsStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12@\n\x0fGetInboundStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12>\n\rGetUsersStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12=\n\x0cGetUserStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12I\n\x12GetUserOnlineStats\x12\x14.service.StatRequest\x1a\x1b.service.OnlineStatResponse\"\x00\x12V\n\x18GetUserOnlineIpListStats\x12\x14.service.StatRequest\x1a\".service.StatsOnlineIpListResponse\"\x00\x12-\n\x08SyncUser\x12\r.service.User\x1a\x0e.service.Empty\"\x00(\x01\x12-\n\tSyncUsers\x12\x0e.service.Users\x1a\x0e.service.Empty\"\x00\x42\x18Z\x16marzban_node_go/commonb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\'GozargahNodeBridge/common/service.proto\x12\x07service\"\x07\n\x05\x45mpty\"O\n\x10\x42\x61seInfoResponse\x12\x0f\n\x07started\x18\x01 \x01(\x08\x12\x14\n\x0c\x63ore_version\x18\x02 \x01(\t\x12\x14\n\x0cnode_version\x18\x03 \x01(\t\"o\n\x07\x42\x61\x63kend\x12\"\n\x04type\x18\x01 \x01(\x0e\x32\x14.service.BackendType\x12\x0e\n\x06\x63onfig\x18\x02 \x01(\t\x12\x1c\n\x05users\x18\x03 \x03(\x0b\x32\r.service.User\x12\x12\n\nkeep_alive\x18\x04 \x01(\x04\"\x15\n\x03Log\x12\x0e\n\x06\x64\x65tail\x18\x01 \x01(\t\"?\n\x04Stat\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0c\n\x04link\x18\x03 \x01(\t\x12\r\n\x05value\x18\x04 \x01(\x03\",\n\x0cStatResponse\x12\x1c\n\x05stats\x18\x01 \x03(\x0b\x32\r.service.Stat\"K\n\x0bStatRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05reset\x18\x02 \x01(\x08\x12\x1f\n\x04type\x18\x03 \x01(\x0e\x32\x11.service.StatType\"1\n\x12OnlineStatResponse\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x03\"\x8f\x01\n\x19StatsOnlineIpListResponse\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x38\n\x03ips\x18\x02 \x03(\x0b\x32+.service.StatsOnlineIpListResponse.IpsEntry\x1a*\n\x08IpsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x03:\x02\x38\x01\"\xcc\x01\n\x14\x42\x61\x63kendStatsResponse\x12\x15\n\rnum_goroutine\x18\x01 \x01(\r\x12\x0e\n\x06num_gc\x18\x02 \x01(\r\x12\r\n\x05\x61lloc\x18\x03 \x01(\x04\x12\x13\n\x0btotal_alloc\x18\x04 \x01(\x04\x12\x0b\n\x03sys\x18\x05 \x01(\x04\x12\x0f\n\x07mallocs\x18\x06 \x01(\x04\x12\r\n\x05\x66rees\x18\x07 \x01(\x04\x12\x14\n\x0clive_objects\x18\x08 \x01(\x04\x12\x16\n\x0epause_total_ns\x18\t \x01(\x04\x12\x0e\n\x06uptime\x18\n \x01(\r\"\xa4\x01\n\x13SystemStatsResponse\x12\x11\n\tmem_total\x18\x01 \x01(\x04\x12\x10\n\x08mem_used\x18\x02 \x01(\x04\x12\x11\n\tcpu_cores\x18\x03 \x01(\x04\x12\x11\n\tcpu_usage\x18\x04 \x01(\x01\x12 \n\x18incoming_bandwidth_speed\x18\x05 \x01(\x04\x12 \n\x18outgoing_bandwidth_speed\x18\x06 \x01(\x04\"\x13\n\x05Vmess\x12\n\n\x02id\x18\x01 \x01(\t\"!\n\x05Vless\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04\x66low\x18\x02 \x01(\t\"\x1a\n\x06Trojan\x12\x10\n\x08password\x18\x01 \x01(\t\"/\n\x0bShadowsocks\x12\x10\n\x08password\x18\x01 \x01(\t\x12\x0e\n\x06method\x18\x02 \x01(\t\"\x91\x01\n\x05Proxy\x12\x1d\n\x05vmess\x18\x01 \x01(\x0b\x32\x0e.service.Vmess\x12\x1d\n\x05vless\x18\x02 \x01(\x0b\x32\x0e.service.Vless\x12\x1f\n\x06trojan\x18\x03 \x01(\x0b\x32\x0f.service.Trojan\x12)\n\x0bshadowsocks\x18\x04 \x01(\x0b\x32\x14.service.Shadowsocks\"H\n\x04User\x12\r\n\x05\x65mail\x18\x01 \x01(\t\x12\x1f\n\x07proxies\x18\x02 \x01(\x0b\x32\x0e.service.Proxy\x12\x10\n\x08inbounds\x18\x03 \x03(\t\"%\n\x05Users\x12\x1c\n\x05users\x18\x01 \x03(\x0b\x32\r.service.User*\x17\n\x0b\x42\x61\x63kendType\x12\x08\n\x04XRAY\x10\x00*_\n\x08StatType\x12\r\n\tOutbounds\x10\x00\x12\x0c\n\x08Outbound\x10\x01\x12\x0c\n\x08Inbounds\x10\x02\x12\x0b\n\x07Inbound\x10\x03\x12\r\n\tUsersStat\x10\x04\x12\x0c\n\x08UserStat\x10\x05\x32\x9a\x05\n\x0bNodeService\x12\x36\n\x05Start\x12\x10.service.Backend\x1a\x19.service.BaseInfoResponse\"\x00\x12(\n\x04Stop\x12\x0e.service.Empty\x1a\x0e.service.Empty\"\x00\x12:\n\x0bGetBaseInfo\x12\x0e.service.Empty\x1a\x19.service.BaseInfoResponse\"\x00\x12+\n\x07GetLogs\x12\x0e.service.Empty\x1a\x0c.service.Log\"\x00\x30\x01\x12@\n\x0eGetSystemStats\x12\x0e.service.Empty\x1a\x1c.service.SystemStatsResponse\"\x00\x12\x42\n\x0fGetBackendStats\x12\x0e.service.Empty\x1a\x1d.service.BackendStatsResponse\"\x00\x12\x39\n\x08GetStats\x12\x14.service.StatRequest\x1a\x15.service.StatResponse\"\x00\x12I\n\x12GetUserOnlineStats\x12\x14.service.StatRequest\x1a\x1b.service.OnlineStatResponse\"\x00\x12V\n\x18GetUserOnlineIpListStats\x12\x14.service.StatRequest\x1a\".service.StatsOnlineIpListResponse\"\x00\x12-\n\x08SyncUser\x12\r.service.User\x1a\x0e.service.Empty\"\x00(\x01\x12-\n\tSyncUsers\x12\x0e.service.Users\x1a\x0e.service.Empty\"\x00\x42\x18Z\x16marzban_node_go/commonb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,8 +34,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._serialized_options = b'Z\026marzban_node_go/common'
   _globals['_STATSONLINEIPLISTRESPONSE_IPSENTRY']._loaded_options = None
   _globals['_STATSONLINEIPLISTRESPONSE_IPSENTRY']._serialized_options = b'8\001'
-  _globals['_BACKENDTYPE']._serialized_start=1398
-  _globals['_BACKENDTYPE']._serialized_end=1421
+  _globals['_BACKENDTYPE']._serialized_start=1431
+  _globals['_BACKENDTYPE']._serialized_end=1454
+  _globals['_STATTYPE']._serialized_start=1456
+  _globals['_STATTYPE']._serialized_end=1551
   _globals['_EMPTY']._serialized_start=52
   _globals['_EMPTY']._serialized_end=59
   _globals['_BASEINFORESPONSE']._serialized_start=61
@@ -49,31 +51,31 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_STATRESPONSE']._serialized_start=343
   _globals['_STATRESPONSE']._serialized_end=387
   _globals['_STATREQUEST']._serialized_start=389
-  _globals['_STATREQUEST']._serialized_end=431
-  _globals['_ONLINESTATRESPONSE']._serialized_start=433
-  _globals['_ONLINESTATRESPONSE']._serialized_end=482
-  _globals['_STATSONLINEIPLISTRESPONSE']._serialized_start=485
-  _globals['_STATSONLINEIPLISTRESPONSE']._serialized_end=628
-  _globals['_STATSONLINEIPLISTRESPONSE_IPSENTRY']._serialized_start=586
-  _globals['_STATSONLINEIPLISTRESPONSE_IPSENTRY']._serialized_end=628
-  _globals['_BACKENDSTATSRESPONSE']._serialized_start=631
-  _globals['_BACKENDSTATSRESPONSE']._serialized_end=835
-  _globals['_SYSTEMSTATSRESPONSE']._serialized_start=838
-  _globals['_SYSTEMSTATSRESPONSE']._serialized_end=1002
-  _globals['_VMESS']._serialized_start=1004
-  _globals['_VMESS']._serialized_end=1023
-  _globals['_VLESS']._serialized_start=1025
-  _globals['_VLESS']._serialized_end=1058
-  _globals['_TROJAN']._serialized_start=1060
-  _globals['_TROJAN']._serialized_end=1086
-  _globals['_SHADOWSOCKS']._serialized_start=1088
-  _globals['_SHADOWSOCKS']._serialized_end=1135
-  _globals['_PROXY']._serialized_start=1138
-  _globals['_PROXY']._serialized_end=1283
-  _globals['_USER']._serialized_start=1285
-  _globals['_USER']._serialized_end=1357
-  _globals['_USERS']._serialized_start=1359
-  _globals['_USERS']._serialized_end=1396
-  _globals['_NODESERVICE']._serialized_start=1424
-  _globals['_NODESERVICE']._serialized_end=2426
+  _globals['_STATREQUEST']._serialized_end=464
+  _globals['_ONLINESTATRESPONSE']._serialized_start=466
+  _globals['_ONLINESTATRESPONSE']._serialized_end=515
+  _globals['_STATSONLINEIPLISTRESPONSE']._serialized_start=518
+  _globals['_STATSONLINEIPLISTRESPONSE']._serialized_end=661
+  _globals['_STATSONLINEIPLISTRESPONSE_IPSENTRY']._serialized_start=619
+  _globals['_STATSONLINEIPLISTRESPONSE_IPSENTRY']._serialized_end=661
+  _globals['_BACKENDSTATSRESPONSE']._serialized_start=664
+  _globals['_BACKENDSTATSRESPONSE']._serialized_end=868
+  _globals['_SYSTEMSTATSRESPONSE']._serialized_start=871
+  _globals['_SYSTEMSTATSRESPONSE']._serialized_end=1035
+  _globals['_VMESS']._serialized_start=1037
+  _globals['_VMESS']._serialized_end=1056
+  _globals['_VLESS']._serialized_start=1058
+  _globals['_VLESS']._serialized_end=1091
+  _globals['_TROJAN']._serialized_start=1093
+  _globals['_TROJAN']._serialized_end=1119
+  _globals['_SHADOWSOCKS']._serialized_start=1121
+  _globals['_SHADOWSOCKS']._serialized_end=1168
+  _globals['_PROXY']._serialized_start=1171
+  _globals['_PROXY']._serialized_end=1316
+  _globals['_USER']._serialized_start=1318
+  _globals['_USER']._serialized_end=1390
+  _globals['_USERS']._serialized_start=1392
+  _globals['_USERS']._serialized_end=1429
+  _globals['_NODESERVICE']._serialized_start=1554
+  _globals['_NODESERVICE']._serialized_end=2220
 # @@protoc_insertion_point(module_scope)

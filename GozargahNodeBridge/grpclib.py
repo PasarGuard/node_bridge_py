@@ -139,45 +139,12 @@ class Node(GozargahNode):
             timeout=timeout,
         )
 
-    async def get_outbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
+    async def get_stats(
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+    ) -> service.StatResponse | None:
         return await self._handle_grpc_request(
-            method=self._client.GetOutboundsStats,
-            request=service.StatRequest(reset=reset),
-            timeout=timeout,
-        )
-
-    async def get_outbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._handle_grpc_request(
-            method=self._client.GetOutboundStats,
-            request=service.StatRequest(name=tag, reset=reset),
-            timeout=timeout,
-        )
-
-    async def get_inbounds_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._handle_grpc_request(
-            method=self._client.GetInboundsStats,
-            request=service.StatRequest(reset=reset),
-            timeout=timeout,
-        )
-
-    async def get_inbound_stats(self, tag: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._handle_grpc_request(
-            method=self._client.GetInboundStats,
-            request=service.StatRequest(name=tag, reset=reset),
-            timeout=timeout,
-        )
-
-    async def get_users_stats(self, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._handle_grpc_request(
-            method=self._client.GetUsersStats,
-            request=service.StatRequest(reset=reset),
-            timeout=timeout,
-        )
-
-    async def get_user_stats(self, email: str, reset: bool = True, timeout: int = 10) -> service.StatResponse | None:
-        return await self._handle_grpc_request(
-            method=self._client.GetUserStats,
-            request=service.StatRequest(name=email, reset=reset),
+            method=self._client.GetStats,
+            request=service.StatRequest(reset=reset, name=name, type=stat_type),
             timeout=timeout,
         )
 

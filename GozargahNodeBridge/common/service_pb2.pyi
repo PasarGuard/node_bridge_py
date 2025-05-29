@@ -9,7 +9,22 @@ DESCRIPTOR: _descriptor.FileDescriptor
 class BackendType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     XRAY: _ClassVar[BackendType]
+
+class StatType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    Outbounds: _ClassVar[StatType]
+    Outbound: _ClassVar[StatType]
+    Inbounds: _ClassVar[StatType]
+    Inbound: _ClassVar[StatType]
+    UsersStat: _ClassVar[StatType]
+    UserStat: _ClassVar[StatType]
 XRAY: BackendType
+Outbounds: StatType
+Outbound: StatType
+Inbounds: StatType
+Inbound: StatType
+UsersStat: StatType
+UserStat: StatType
 
 class Empty(_message.Message):
     __slots__ = ()
@@ -62,12 +77,14 @@ class StatResponse(_message.Message):
     def __init__(self, stats: _Optional[_Iterable[_Union[Stat, _Mapping]]] = ...) -> None: ...
 
 class StatRequest(_message.Message):
-    __slots__ = ("name", "reset")
+    __slots__ = ("name", "reset", "type")
     NAME_FIELD_NUMBER: _ClassVar[int]
     RESET_FIELD_NUMBER: _ClassVar[int]
+    TYPE_FIELD_NUMBER: _ClassVar[int]
     name: str
     reset: bool
-    def __init__(self, name: _Optional[str] = ..., reset: bool = ...) -> None: ...
+    type: StatType
+    def __init__(self, name: _Optional[str] = ..., reset: bool = ..., type: _Optional[_Union[StatType, str]] = ...) -> None: ...
 
 class OnlineStatResponse(_message.Message):
     __slots__ = ("name", "value")

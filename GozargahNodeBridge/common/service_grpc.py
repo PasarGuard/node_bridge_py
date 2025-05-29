@@ -39,27 +39,7 @@ class NodeServiceBase(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def GetOutboundsStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
-        pass
-
-    @abc.abstractmethod
-    async def GetOutboundStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
-        pass
-
-    @abc.abstractmethod
-    async def GetInboundsStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
-        pass
-
-    @abc.abstractmethod
-    async def GetInboundStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
-        pass
-
-    @abc.abstractmethod
-    async def GetUsersStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
-        pass
-
-    @abc.abstractmethod
-    async def GetUserStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
+    async def GetStats(self, stream: 'grpclib.server.Stream[GozargahNodeBridge.common.service_pb2.StatRequest, GozargahNodeBridge.common.service_pb2.StatResponse]') -> None:
         pass
 
     @abc.abstractmethod
@@ -116,38 +96,8 @@ class NodeServiceBase(abc.ABC):
                 GozargahNodeBridge.common.service_pb2.Empty,
                 GozargahNodeBridge.common.service_pb2.BackendStatsResponse,
             ),
-            '/service.NodeService/GetOutboundsStats': grpclib.const.Handler(
-                self.GetOutboundsStats,
-                grpclib.const.Cardinality.UNARY_UNARY,
-                GozargahNodeBridge.common.service_pb2.StatRequest,
-                GozargahNodeBridge.common.service_pb2.StatResponse,
-            ),
-            '/service.NodeService/GetOutboundStats': grpclib.const.Handler(
-                self.GetOutboundStats,
-                grpclib.const.Cardinality.UNARY_UNARY,
-                GozargahNodeBridge.common.service_pb2.StatRequest,
-                GozargahNodeBridge.common.service_pb2.StatResponse,
-            ),
-            '/service.NodeService/GetInboundsStats': grpclib.const.Handler(
-                self.GetInboundsStats,
-                grpclib.const.Cardinality.UNARY_UNARY,
-                GozargahNodeBridge.common.service_pb2.StatRequest,
-                GozargahNodeBridge.common.service_pb2.StatResponse,
-            ),
-            '/service.NodeService/GetInboundStats': grpclib.const.Handler(
-                self.GetInboundStats,
-                grpclib.const.Cardinality.UNARY_UNARY,
-                GozargahNodeBridge.common.service_pb2.StatRequest,
-                GozargahNodeBridge.common.service_pb2.StatResponse,
-            ),
-            '/service.NodeService/GetUsersStats': grpclib.const.Handler(
-                self.GetUsersStats,
-                grpclib.const.Cardinality.UNARY_UNARY,
-                GozargahNodeBridge.common.service_pb2.StatRequest,
-                GozargahNodeBridge.common.service_pb2.StatResponse,
-            ),
-            '/service.NodeService/GetUserStats': grpclib.const.Handler(
-                self.GetUserStats,
+            '/service.NodeService/GetStats': grpclib.const.Handler(
+                self.GetStats,
                 grpclib.const.Cardinality.UNARY_UNARY,
                 GozargahNodeBridge.common.service_pb2.StatRequest,
                 GozargahNodeBridge.common.service_pb2.StatResponse,
@@ -218,39 +168,9 @@ class NodeServiceStub:
             GozargahNodeBridge.common.service_pb2.Empty,
             GozargahNodeBridge.common.service_pb2.BackendStatsResponse,
         )
-        self.GetOutboundsStats = grpclib.client.UnaryUnaryMethod(
+        self.GetStats = grpclib.client.UnaryUnaryMethod(
             channel,
-            '/service.NodeService/GetOutboundsStats',
-            GozargahNodeBridge.common.service_pb2.StatRequest,
-            GozargahNodeBridge.common.service_pb2.StatResponse,
-        )
-        self.GetOutboundStats = grpclib.client.UnaryUnaryMethod(
-            channel,
-            '/service.NodeService/GetOutboundStats',
-            GozargahNodeBridge.common.service_pb2.StatRequest,
-            GozargahNodeBridge.common.service_pb2.StatResponse,
-        )
-        self.GetInboundsStats = grpclib.client.UnaryUnaryMethod(
-            channel,
-            '/service.NodeService/GetInboundsStats',
-            GozargahNodeBridge.common.service_pb2.StatRequest,
-            GozargahNodeBridge.common.service_pb2.StatResponse,
-        )
-        self.GetInboundStats = grpclib.client.UnaryUnaryMethod(
-            channel,
-            '/service.NodeService/GetInboundStats',
-            GozargahNodeBridge.common.service_pb2.StatRequest,
-            GozargahNodeBridge.common.service_pb2.StatResponse,
-        )
-        self.GetUsersStats = grpclib.client.UnaryUnaryMethod(
-            channel,
-            '/service.NodeService/GetUsersStats',
-            GozargahNodeBridge.common.service_pb2.StatRequest,
-            GozargahNodeBridge.common.service_pb2.StatResponse,
-        )
-        self.GetUserStats = grpclib.client.UnaryUnaryMethod(
-            channel,
-            '/service.NodeService/GetUserStats',
+            '/service.NodeService/GetStats',
             GozargahNodeBridge.common.service_pb2.StatRequest,
             GozargahNodeBridge.common.service_pb2.StatResponse,
         )
