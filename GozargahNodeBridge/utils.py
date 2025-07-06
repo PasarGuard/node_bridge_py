@@ -1,4 +1,4 @@
-from grpc import StatusCode as Status
+from grpclib.const import Status
 from http import HTTPStatus
 
 from GozargahNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks

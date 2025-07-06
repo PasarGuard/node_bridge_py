@@ -55,8 +55,7 @@ class Node(GozargahNode):
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(-1, "Request timed out")
         elif isinstance(error, GRPCError):
-            grpc_status = error.status
-            http_status = grpc_to_http_status(grpc_status)
+            http_status = grpc_to_http_status(error.status)
             raise NodeAPIError(http_status, error.message)
         elif isinstance(error, StreamTerminatedError):
             raise NodeAPIError(-1, f"Stream terminated: {str(error)}")

@@ -33,6 +33,10 @@ async def main():
     )
 
     await node.update_user(user)
+    try:
+        await node.get_user_online_ip_list("does-not-exist@example.com")
+    except Bridge.NodeAPIError as e:
+        print(e.code)
 
     await asyncio.sleep(5)
 
