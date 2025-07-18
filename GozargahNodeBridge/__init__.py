@@ -12,10 +12,10 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: M03ED
-Version: 0.0.40
+Version: 0.0.41
 """
 
-__version__ = "0.0.40"
+__version__ = "0.0.41"
 __author__ = "M03ED"
 
 
@@ -96,6 +96,7 @@ def create_node(
 
 
 __all__ = [
+    "GozargahNode",
     "NodeType",
     "Node",
     "NodeAPIError",

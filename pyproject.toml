@@ -1,6 +1,6 @@
 [project]
 name = "gozargah-node-bridge"
-version = "0.0.40"
+version = "0.0.41"
 description = "python package to connect your project with gozargah node go"
 url = "https://github.com/m03ed/gozargah_node_bridge_py"
 keywords = ["Gozargah-Node", "Marzban", "Gozargah", "Marzban python", "Marzban API"]
@@ -8,10 +8,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiorwlock>=1.5.0",
-    "grpcio-tools>=1.68.1",
-    "grpclib>=0.4.7",
+    "grpclib>=0.4.8",
     "httpx>=0.28.1",
-    "protobuf>=5.29.3",
+    "protobuf>=6.31.1",
 ]
 
 classifiers = [
@@ -21,6 +20,11 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/m03ed/gozargah_node_bridge_py"
 Repository = "https://github.com/m03ed/gozargah_node_bridge_py.git"
+
+[dependency-groups]
+dev = [
+  "grpcio-tools>=1.73.1",
+]
 
 [tool.ruff]
 line-length = 120
