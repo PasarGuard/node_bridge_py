@@ -35,7 +35,7 @@ wheels = [
 
 [[package]]
 name = "gozargah-node-bridge"
-version = "0.0.40"
+version = "0.0.41"
 source = { editable = "." }
 dependencies = [
     { name = "aiorwlock" },
