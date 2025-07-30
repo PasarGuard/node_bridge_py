@@ -38,9 +38,12 @@ async def main():
     except Bridge.NodeAPIError as e:
         print(e.code)
 
+    stats = await node.get_stats(0)
+    print(stats)
+
     await asyncio.sleep(5)
 
-    stats = await node.get_stats(0)
+    stats = await node.get_system_stats()
     print(stats)
 
     logs = await node.get_logs()

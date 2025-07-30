@@ -135,13 +135,19 @@ class Node(GozargahNode):
             await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
 
     async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
-        return await self._make_request(method="GET", endpoint="info", timeout=timeout)
+        return await self._make_request(
+            method="GET", endpoint="info", timeout=timeout, proto_response_class=service.BaseInfoResponse
+        )
 
     async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
-        return await self._make_request(method="GET", endpoint="stats/system", timeout=timeout)
+        return await self._make_request(
+            method="GET", endpoint="stats/system", timeout=timeout, proto_response_class=service.SystemStatsResponse
+        )
 
     async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
-        return await self._make_request(method="GET", endpoint="stats/backend", timeout=timeout)
+        return await self._make_request(
+            method="GET", endpoint="stats/backend", timeout=timeout, proto_response_class=service.BackendStatsResponse
+        )
 
     async def get_stats(
         self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
