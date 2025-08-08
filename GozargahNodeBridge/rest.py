@@ -101,6 +101,7 @@ class Node(GozargahNode):
         ghather_logs: bool = True,
         timeout: int = 15,
     ):
+        """Start the node with proper task management"""
         health = await self.get_health()
         if health in (Health.BROKEN, Health.HEALTHY):
             await self.stop()
@@ -116,23 +117,42 @@ class Node(GozargahNode):
                 proto_response_class=service.BaseInfoResponse,
             )
 
-            tasks = [asyncio.create_task(self._check_node_health()), asyncio.create_task(self._sync_user())]
-            if ghather_logs:
-                tasks.append(asyncio.create_task(self._fetch_logs()))
-            await self.connect(
-                response.node_version,
-                response.core_version,
-                tasks,
-            )
+            tasks = []
+            try:
+                health_task = asyncio.create_task(self._check_node_health(), name=f"health_check_{id(self)}")
+                sync_task = asyncio.create_task(self._sync_user(), name=f"sync_user_{id(self)}")
+                tasks.extend([health_task, sync_task])
+
+                if ghather_logs:
+                    logs_task = asyncio.create_task(self._fetch_logs(), name=f"fetch_logs_{id(self)}")
+                    tasks.append(logs_task)
+
+                await self.connect(
+                    response.node_version,
+                    response.core_version,
+                    tasks,
+                )
+            except Exception as e:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise e
 
         return response
 
     async def stop(self, timeout: int = 10) -> None:
+        """Stop the node with proper cleanup"""
         if await self.get_health() is Health.NOT_CONNECTED:
             return
+
         async with self._node_lock:
             await self.disconnect()
-            await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
+
+            try:
+                await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
+            except Exception:
+                pass
 
     async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
         return await self._make_request(
@@ -194,95 +214,175 @@ class Node(GozargahNode):
             )
 
     async def _check_node_health(self):
-        while True:
-            last_health = await self.get_health()
+        """Health check task with proper cancellation handling"""
+        health_check_interval = 15
+        consecutive_failures = 0
+        max_failures = 3
 
-            try:
-                await self.get_backend_stats()
-                if last_health != Health.HEALTHY:
-                    await self.set_health(Health.HEALTHY)
-            except Exception:
-                if last_health != Health.BROKEN:
-                    await self.set_health(Health.BROKEN)
+        try:
+            while not self.is_shutting_down():
+                last_health = await self.get_health()
 
-            await asyncio.sleep(10)
-
-    async def _fetch_logs(self):
-        while True:
-            health = await self.get_health()
-            if health == Health.BROKEN:
-                await asyncio.sleep(10)
-                continue
-            elif health == Health.NOT_CONNECTED:
-                return
-
-            try:
-                async with self._client.stream("GET", "/logs", timeout=None) as response:
-                    buffer = b""
-
-                    async for chunk in response.aiter_bytes():
-                        buffer += chunk
-
-                        while b"\n" in buffer:
-                            line, buffer = buffer.split(b"\n", 1)
-                            line = line.decode().strip()
-
-                            if line:
-                                if self._logs_queue:
-                                    await self._logs_queue.put(line)
-
-            except Exception:
-                await asyncio.sleep(10)
-                continue
-
-    async def _sync_user(self) -> None:
-        while True:
-            health = await self.get_health()
-
-            if health == Health.BROKEN:
-                await asyncio.sleep(10)
-                continue
-            elif health == Health.NOT_CONNECTED:
-                return
-
-            async with self._lock.reader_lock:
-                if self._user_queue is None or self._notify_queue is None:
-                    return
-
-                user_task = asyncio.create_task(self._user_queue.get())
-                notify_task = asyncio.create_task(self._notify_queue.get())
-
-            try:
-                # Wait for first completed operation
-                done, pending = await asyncio.wait([user_task, notify_task], return_when=asyncio.FIRST_COMPLETED)
-
-            except asyncio.CancelledError:
-                # Cleanup if task is cancelled
-                user_task.cancel()
-                notify_task.cancel()
-                return
-
-            # Cancel pending tasks to avoid leaks
-            for task in pending:
-                task.cancel()
-
-            if notify_task in done:
-                continue
-
-            # Handle UserChan message
-            if user_task in done:
-                user = user_task.result()
-                if user is None:
-                    continue
+                if last_health in (Health.NOT_CONNECTED, Health.INVALID):
+                    break
 
                 try:
-                    await self._make_request(
-                        method="PUT",
-                        endpoint="user/sync",
-                        timeout=10,
-                        proto_message=user,
-                        proto_response_class=service.Empty,
-                    )
+                    await asyncio.wait_for(self.get_backend_stats(), timeout=10)
+                    consecutive_failures = 0
+                    if last_health != Health.HEALTHY:
+                        await self.set_health(Health.HEALTHY)
                 except Exception:
-                    await asyncio.sleep(10)
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_failures and last_health != Health.BROKEN:
+                        await self.set_health(Health.BROKEN)
+
+                try:
+                    await asyncio.wait_for(asyncio.sleep(health_check_interval), timeout=health_check_interval + 1)
+                except asyncio.TimeoutError:
                     continue
+
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            try:
+                await self.set_health(Health.BROKEN)
+            except Exception:
+                pass
+
+    async def _fetch_logs(self):
+        """Log fetching task with proper cancellation handling"""
+        retry_delay = 10
+        max_retry_delay = 60
+
+        try:
+            while not self.is_shutting_down():
+                health = await self.get_health()
+
+                if health in (Health.NOT_CONNECTED, Health.INVALID):
+                    break
+
+                if health == Health.BROKEN:
+                    try:
+                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                    except asyncio.TimeoutError:
+                        pass
+                    retry_delay = min(retry_delay * 1.5, max_retry_delay)
+                    continue
+
+                retry_delay = 10
+
+                try:
+                    async with self._client.stream("GET", "/logs", timeout=60) as response:
+                        buffer = b""
+
+                        async for chunk in response.aiter_bytes():
+                            if self.is_shutting_down():
+                                break
+
+                            buffer += chunk
+
+                            while b"\n" in buffer:
+                                line, buffer = buffer.split(b"\n", 1)
+                                line = line.decode().strip()
+
+                                if line:
+                                    logs_queue = await self.get_logs()
+                                    if logs_queue:
+                                        await logs_queue.put(line)
+
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    try:
+                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                    except asyncio.TimeoutError:
+                        pass
+
+        except asyncio.CancelledError:
+            pass
+
+    async def _sync_user(self) -> None:
+        """User sync task with proper cancellation handling"""
+        retry_delay = 10
+        max_retry_delay = 60
+
+        try:
+            while not self.is_shutting_down():
+                health = await self.get_health()
+
+                if health in (Health.NOT_CONNECTED, Health.INVALID):
+                    break
+
+                if health == Health.BROKEN:
+                    try:
+                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                    except asyncio.TimeoutError:
+                        pass
+                    retry_delay = min(retry_delay * 1.5, max_retry_delay)
+                    continue
+
+                retry_delay = 10
+                user_task = None
+                notify_task = None
+
+                try:
+                    async with self._lock.reader_lock:
+                        if self._user_queue is None or self._notify_queue is None:
+                            break
+
+                        user_task = asyncio.create_task(self._user_queue.get())
+                        notify_task = asyncio.create_task(self._notify_queue.get())
+
+                    done, pending = await asyncio.wait(
+                        [user_task, notify_task], return_when=asyncio.FIRST_COMPLETED, timeout=30
+                    )
+
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+
+                    if not done:
+                        continue
+
+                    if notify_task in done:
+                        notify_result = notify_task.result()
+                        if notify_result is None:
+                            break
+                        continue
+
+                    if user_task in done:
+                        user = user_task.result()
+                        if user is None:
+                            break
+
+                        try:
+                            await self._make_request(
+                                method="PUT",
+                                endpoint="user/sync",
+                                timeout=10,
+                                proto_message=user,
+                                proto_response_class=service.Empty,
+                            )
+                        except Exception:
+                            try:
+                                await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                            except asyncio.TimeoutError:
+                                pass
+
+                except asyncio.CancelledError:
+                    if user_task and not user_task.done():
+                        user_task.cancel()
+                    if notify_task and not notify_task.done():
+                        notify_task.cancel()
+                    break
+                except Exception:
+                    try:
+                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                    except asyncio.TimeoutError:
+                        pass
+
+        except asyncio.CancelledError:
+            pass
