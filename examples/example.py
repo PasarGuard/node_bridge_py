@@ -1,6 +1,6 @@
 import asyncio
 
-import GozargahNodeBridge as Bridge
+import PasarGuardNodeBridge as Bridge
 
 address = "172.27.158.135"
 port = 2096

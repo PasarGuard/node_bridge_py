@@ -7,7 +7,7 @@ from typing import Optional
 
 from aiorwlock import RWLock
 
-from GozargahNodeBridge.common.service_pb2 import User
+from PasarGuardNodeBridge.common.service_pb2 import User
 
 
 class RollingQueue(asyncio.Queue):

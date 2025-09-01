@@ -1,36 +1,30 @@
 name: Publish Python Package to PyPI
-
 on:
   release:
     types: [created]
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update 
-        sudo apt-get install -y curl
+      - uses: actions/checkout@v4
 
-    - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-    - name: Install package dependencies
-      run: |
-        uv sync
-        uv pip install setuptools wheel twine build
-
-    - name: Build package
-      run: uv run python3 -m build
-
-    - name: Publish package to PyPI
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-      run: |
-        uv run twine upload dist/*
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update 
+          sudo apt-get install -y curl
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Install package dependencies
+        run: |
+          uv sync
+          uv pip install twine
+      - name: Build package
+        run: uv build
+      - name: Publish package to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          uv run twine upload dist/*

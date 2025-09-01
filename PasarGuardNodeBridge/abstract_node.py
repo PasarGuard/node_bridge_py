@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 
-from GozargahNodeBridge.common import service_pb2 as service
-from GozargahNodeBridge.controller import Controller
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.controller import Controller
 
 
-class GozargahNode(Controller, ABC):
+class PasarGuardNode(Controller, ABC):
     @abstractmethod
     async def start(
         self,

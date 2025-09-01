@@ -4,7 +4,7 @@ generate_grpc_code:
 		--python_out=. \
 		--pyi_out=. \
 		--grpclib_python_out=. \
-		GozargahNodeBridge/common/service.proto
+		PasarGuardNodeBridge/common/service.proto
 
 CN ?= localhost
 SAN ?= DNS:localhost,IP:127.0.0.1

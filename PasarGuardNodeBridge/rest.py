@@ -3,12 +3,12 @@ import asyncio
 import httpx
 from google.protobuf.message import Message, DecodeError
 
-from GozargahNodeBridge.controller import NodeAPIError, Health
-from GozargahNodeBridge.common import service_pb2 as service
-from GozargahNodeBridge.abstract_node import GozargahNode
+from PasarGuardNodeBridge.controller import NodeAPIError, Health
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 
 
-class Node(GozargahNode):
+class Node(PasarGuardNode):
     def __init__(
         self,
         address: str,

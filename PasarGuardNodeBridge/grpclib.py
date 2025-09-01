@@ -4,14 +4,14 @@ from grpclib.client import Channel
 from grpclib.config import Configuration
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 
-from GozargahNodeBridge.common import service_pb2 as service
-from GozargahNodeBridge.common import service_grpc
-from GozargahNodeBridge.controller import NodeAPIError, Health
-from GozargahNodeBridge.abstract_node import GozargahNode
-from GozargahNodeBridge.utils import grpc_to_http_status
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.common import service_grpc
+from PasarGuardNodeBridge.controller import NodeAPIError, Health
+from PasarGuardNodeBridge.abstract_node import PasarGuardNode
+from PasarGuardNodeBridge.utils import grpc_to_http_status
 
 
-class Node(GozargahNode):
+class Node(PasarGuardNode):
     def __init__(
         self,
         address: str,

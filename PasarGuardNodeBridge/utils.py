@@ -1,7 +1,7 @@
 from grpclib.const import Status
 from http import HTTPStatus
 
-from GozargahNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks
+from PasarGuardNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks
 
 
 def create_user(email: str, proxies: Proxy, inbounds: list[str]) -> User:

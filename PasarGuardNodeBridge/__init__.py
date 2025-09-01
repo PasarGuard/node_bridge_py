@@ -1,8 +1,8 @@
 """
-Gozargah Node Bridge
+PasarGuard Node Bridge
 
-A Python library for interfacing with Gozargah nodes via gRPC or REST protocols.
-This library abstracts communication with gozargah-node, allowing for
+A Python library for interfacing with PasarGuard nodes via gRPC or REST protocols.
+This library abstracts communication with PasarGuard nodes, allowing for
 user management, proxy configuration, and health monitoring through a unified interface.
 
 Features:
@@ -11,21 +11,21 @@ Features:
 - High-level API for common node operations
 - Extensible with custom metadata via the `extra` argument
 
-Author: M03ED
-Version: 0.0.44
+Author: PasarGuard
+Version: 0.0.45
 """
 
-__version__ = "0.0.44"
-__author__ = "M03ED"
+__version__ = "0.0.45"
+__author__ = "PasarGuard"
 
 
 from enum import Enum
 
-from GozargahNodeBridge.abstract_node import GozargahNode
-from GozargahNodeBridge.grpclib import Node as GrpcNode
-from GozargahNodeBridge.rest import Node as RestNode
-from GozargahNodeBridge.controller import NodeAPIError, Health
-from GozargahNodeBridge.utils import create_user, create_proxy
+from PasarGuardNodeBridge.abstract_node import PasarGuardNode
+from PasarGuardNodeBridge.grpclib import Node as GrpcNode
+from PasarGuardNodeBridge.rest import Node as RestNode
+from PasarGuardNodeBridge.controller import NodeAPIError, Health
+from PasarGuardNodeBridge.utils import create_user, create_proxy
 
 
 class NodeType(str, Enum):
@@ -41,9 +41,9 @@ def create_node(
     api_key: str,
     max_logs: int = 1000,
     extra: dict = {},
-) -> GozargahNode:
+) -> PasarGuardNode:
     """
-    Create and initialize a Gozargah node instance using the specified connection type.
+    Create and initialize a PasarGuard node instance using the specified connection type.
 
     This function abstracts the creation of either a gRPC-based or REST-based node,
     handling the underlying setup and returning a ready-to-use node object.
@@ -58,7 +58,7 @@ def create_node(
         extra (dict, optional): Optional dictionary to pass custom metadata or configuration.
 
     Returns:
-        GozargahNode: An initialized node instance ready for API operations.
+        PasarGuardNode: An initialized node instance ready for API operations.
 
     Raises:
         ValueError: If the provided connection type is invalid.
@@ -96,7 +96,7 @@ def create_node(
 
 
 __all__ = [
-    "GozargahNode",
+    "PasarGuardNode",
     "NodeType",
     "Node",
     "NodeAPIError",
