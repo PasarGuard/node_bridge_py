@@ -1,17 +1,17 @@
 # gozargah_node_bridge_py
-Library to connect and use https://github.com/M03ED/gozargah-node
+Library to connect and use https://github.com/PasarGuard/node
 
 # Usage
 ```shell
-pip install gozargah-node-bridge
+pip install pasarguard-node-bridge
 ```
 Library is fully async for both `gRPC` and `REST API` connection.
 
 # Example
 ```python
-import GozargahNodeBridge as Bridge
+import PasarGuardNodeBridge as Bridge
 # or
-import GozargahNodeBridge as GNB
+import PasarGuardNodeBridge as PGNB
 ```
 
 ## Creating Node
@@ -30,7 +30,7 @@ node = Bridge.create_node(
 ## Proto Structure
 If you need to have access proto structure you can use:
 ```python
-from GozargahNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.common import service_pb2 as service
 ```
 
 ## Create User
@@ -63,7 +63,7 @@ await node.start(
 ### Get User Stats
 ```python
 stats = await node.get_user_stats(
-    email="noreply@donate.gozargah.pro",
+    email="noreply@donate.pasarguard.org",
     reset=True,
     timeout=10,
     )
