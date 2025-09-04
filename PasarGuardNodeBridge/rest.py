@@ -99,6 +99,7 @@ class Node(PasarGuardNode):
         users: list[service.User],
         keep_alive: int = 0,
         ghather_logs: bool = True,
+        exclude_inbounds: list[str] = [],
         timeout: int = 15,
     ):
         """Start the node with proper task management"""
@@ -113,7 +114,13 @@ class Node(PasarGuardNode):
                 method="POST",
                 endpoint="start",
                 timeout=timeout,
-                proto_message=service.Backend(type=backend_type, config=config, users=users, keep_alive=keep_alive),
+                proto_message=service.Backend(
+                    type=backend_type,
+                    config=config,
+                    users=users,
+                    keep_alive=keep_alive,
+                    exclude_inbounds=exclude_inbounds,
+                ),
                 proto_response_class=service.BaseInfoResponse,
             )
 
@@ -253,6 +260,7 @@ class Node(PasarGuardNode):
         """Log fetching task with proper cancellation handling"""
         retry_delay = 10
         max_retry_delay = 60
+        log_retry_delay = 1
 
         try:
             while not self.is_shutting_down():
@@ -271,8 +279,10 @@ class Node(PasarGuardNode):
 
                 retry_delay = 10
 
+                stream_failed = False
                 try:
                     async with self._client.stream("GET", "/logs", timeout=60) as response:
+                        log_retry_delay = 1
                         buffer = b""
 
                         async for chunk in response.aiter_bytes():
@@ -293,10 +303,14 @@ class Node(PasarGuardNode):
                 except asyncio.CancelledError:
                     break
                 except Exception:
+                    stream_failed = True
+
+                if stream_failed:
                     try:
-                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                        await asyncio.wait_for(asyncio.sleep(log_retry_delay), timeout=log_retry_delay + 1)
                     except asyncio.TimeoutError:
                         pass
+                    log_retry_delay = min(log_retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
             pass
@@ -305,6 +319,7 @@ class Node(PasarGuardNode):
         """User sync task with proper cancellation handling"""
         retry_delay = 10
         max_retry_delay = 60
+        sync_retry_delay = 1
 
         try:
             while not self.is_shutting_down():
@@ -366,11 +381,13 @@ class Node(PasarGuardNode):
                                 proto_message=user,
                                 proto_response_class=service.Empty,
                             )
+                            sync_retry_delay = 1
                         except Exception:
                             try:
-                                await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                                await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                             except asyncio.TimeoutError:
                                 pass
+                            sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
 
                 except asyncio.CancelledError:
                     if user_task and not user_task.done():
@@ -380,9 +397,10 @@ class Node(PasarGuardNode):
                     break
                 except Exception:
                     try:
-                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+                        await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                     except asyncio.TimeoutError:
                         pass
+                    sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
             pass

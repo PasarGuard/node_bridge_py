@@ -13,6 +13,7 @@ class PasarGuardNode(Controller, ABC):
         users: list[service.User],
         keep_alive: int,
         ghather_logs: bool,
+        exclude_inbounds: list[str],
         timeout: int,
     ) -> service.BaseInfoResponse | None:
         raise NotImplementedError

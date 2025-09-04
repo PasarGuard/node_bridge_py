@@ -42,16 +42,18 @@ class BaseInfoResponse(_message.Message):
     def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ...) -> None: ...
 
 class Backend(_message.Message):
-    __slots__ = ("type", "config", "users", "keep_alive")
+    __slots__ = ("type", "config", "users", "keep_alive", "exclude_inbounds")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     USERS_FIELD_NUMBER: _ClassVar[int]
     KEEP_ALIVE_FIELD_NUMBER: _ClassVar[int]
+    EXCLUDE_INBOUNDS_FIELD_NUMBER: _ClassVar[int]
     type: BackendType
     config: str
     users: _containers.RepeatedCompositeFieldContainer[User]
     keep_alive: int
-    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ...) -> None: ...
+    exclude_inbounds: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ..., exclude_inbounds: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class Log(_message.Message):
     __slots__ = ("detail",)
