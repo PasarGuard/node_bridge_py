@@ -103,14 +103,22 @@ class Controller:
             if self._user_queue:
                 await self._user_queue.put(user)
 
+    async def update_users(self, users: list[User]):
+        async with self._lock.reader_lock:
+            if not self._user_queue or not users:
+                return
+            for user in users:
+                await self._user_queue.put(user)
+
     async def flush_user_queue(self):
         async with self._lock.writer_lock:
-            if self._user_queue:
-                while not self._user_queue.empty():
-                    try:
-                        self._user_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
+            if not self._user_queue:
+                return
+            while not self._user_queue.empty():
+                try:
+                    self._user_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
     async def get_logs(self) -> asyncio.Queue | None:
         async with self._lock.reader_lock:
