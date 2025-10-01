@@ -197,9 +197,7 @@ class Node(PasarGuardNode):
 
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
-        health_check_interval = 15
-        consecutive_failures = 0
-        max_failures = 3
+        health_check_interval = 10
 
         try:
             while not self.is_shutting_down():
@@ -210,12 +208,10 @@ class Node(PasarGuardNode):
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    consecutive_failures = 0
                     if last_health != Health.HEALTHY:
                         await self.set_health(Health.HEALTHY)
                 except Exception:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_failures and last_health != Health.BROKEN:
+                    if last_health != Health.BROKEN:
                         await self.set_health(Health.BROKEN)
 
                 try:
