@@ -148,7 +148,7 @@ class Node(PasarGuardNode):
 
         return response
 
-    async def stop(self, timeout: int = 10) -> None:
+    async def stop(self, timeout: int = 15) -> None:
         """Stop the node with proper cleanup"""
         if await self.get_health() is Health.NOT_CONNECTED:
             return
@@ -161,23 +161,23 @@ class Node(PasarGuardNode):
             except Exception:
                 pass
 
-    async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
+    async def info(self, timeout: int = 15) -> service.BaseInfoResponse | None:
         return await self._make_request(
             method="GET", endpoint="info", timeout=timeout, proto_response_class=service.BaseInfoResponse
         )
 
-    async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
+    async def get_system_stats(self, timeout: int = 15) -> service.SystemStatsResponse | None:
         return await self._make_request(
             method="GET", endpoint="stats/system", timeout=timeout, proto_response_class=service.SystemStatsResponse
         )
 
-    async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
+    async def get_backend_stats(self, timeout: int = 15) -> service.BackendStatsResponse | None:
         return await self._make_request(
             method="GET", endpoint="stats/backend", timeout=timeout, proto_response_class=service.BackendStatsResponse
         )
 
     async def get_stats(
-        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 15
     ) -> service.StatResponse | None:
         return await self._make_request(
             method="GET",
@@ -187,7 +187,7 @@ class Node(PasarGuardNode):
             proto_response_class=service.StatResponse,
         )
 
-    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int = 15) -> service.OnlineStatResponse | None:
         return await self._make_request(
             method="GET",
             endpoint="stats/user/online",
@@ -196,7 +196,7 @@ class Node(PasarGuardNode):
             proto_response_class=service.OnlineStatResponse,
         )
 
-    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
+    async def get_user_online_ip_list(self, email: str, timeout: int = 15) -> service.StatsOnlineIpListResponse | None:
         return await self._make_request(
             method="GET",
             endpoint="stats/user/online_ip",
@@ -206,7 +206,7 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
+        self, users: list[service.User], flush_queue: bool = False, timeout: int = 15
     ) -> service.Empty | None:
         if flush_queue:
             await self.flush_user_queue()
@@ -219,6 +219,34 @@ class Node(PasarGuardNode):
                 proto_message=service.Users(users=users),
                 proto_response_class=service.Empty,
             )
+
+    async def _sync_user_with_retry(self, user: service.User, max_retries: int = 3, timeout: int = 10) -> bool:
+        """
+        Attempt to sync a user with retry logic for timeout errors.
+        Returns True if successful, False if all retries failed.
+        """
+        for attempt in range(max_retries):
+            try:
+                await self._make_request(
+                    method="PUT",
+                    endpoint="user/sync",
+                    timeout=timeout,
+                    proto_message=user,
+                    proto_response_class=service.Empty,
+                )
+                return True
+            except NodeAPIError as e:
+                # Retry only on timeout (code -1)
+                if e.code == -1 and attempt < max_retries - 1:
+                    # Short delay before retry
+                    await asyncio.sleep(0.5)
+                    continue
+                # For other errors or last attempt, return failure
+                return False
+            except Exception:
+                # Unexpected error, don't retry
+                return False
+        return False
 
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
@@ -369,16 +397,13 @@ class Node(PasarGuardNode):
                         if user is None:
                             break
 
-                        try:
-                            await self._make_request(
-                                method="PUT",
-                                endpoint="user/sync",
-                                timeout=10,
-                                proto_message=user,
-                                proto_response_class=service.Empty,
-                            )
+                        # Try to sync user with retries on timeout
+                        success = await self._sync_user_with_retry(user, max_retries=3, timeout=10)
+                        if success:
                             sync_retry_delay = 1
-                        except Exception:
+                        else:
+                            # Failed after retries, requeue user if not already queued
+                            await self.requeue_user_with_deduplication(user)
                             try:
                                 await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                             except asyncio.TimeoutError:

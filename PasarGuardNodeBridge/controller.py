@@ -38,6 +38,50 @@ class RollingQueue(asyncio.Queue):
                 break
 
 
+class UserQueue(asyncio.Queue):
+    """Queue that tracks pending user emails to avoid duplicate entries"""
+
+    def __init__(self, maxsize=0):
+        super().__init__(maxsize)
+        self._email_count = {}  # Track count of each email in queue
+
+    async def put(self, item):
+        """Add user to queue and track their email"""
+        if item and hasattr(item, 'email'):
+            self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
+        await super().put(item)
+
+    def put_nowait(self, item):
+        """Add user to queue without waiting and track their email"""
+        if item and hasattr(item, 'email'):
+            self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
+        super().put_nowait(item)
+
+    def _update_email_count(self, item):
+        """Update email count when removing a user from queue"""
+        if item and hasattr(item, 'email'):
+            if item.email in self._email_count:
+                self._email_count[item.email] -= 1
+                if self._email_count[item.email] <= 0:
+                    del self._email_count[item.email]
+
+    async def get(self):
+        """Remove and return user from queue, updating email count"""
+        item = await super().get()
+        self._update_email_count(item)
+        return item
+
+    def get_nowait(self):
+        """Remove and return user from queue without waiting, updating email count"""
+        item = super().get_nowait()
+        self._update_email_count(item)
+        return item
+
+    def has_email(self, email: str) -> bool:
+        """Check if a user with this email is already queued"""
+        return email in self._email_count and self._email_count[email] > 0
+
+
 class NodeAPIError(Exception):
     def __init__(self, code, detail):
         self.code = code
@@ -74,7 +118,7 @@ class Controller:
             raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
 
         self._health = Health.NOT_CONNECTED
-        self._user_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10000)
+        self._user_queue: Optional[UserQueue] = UserQueue(maxsize=10000)
         self._notify_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10)
         self._logs_queue: Optional[RollingQueue] = RollingQueue(self.max_logs)
         self._tasks: list[asyncio.Task] = []
@@ -109,6 +153,22 @@ class Controller:
                 return
             for user in users:
                 await self._user_queue.put(user)
+
+    async def requeue_user_with_deduplication(self, user: User):
+        """
+        Requeue a user only if there's no existing version in the queue.
+        Uses the UserQueue's email tracking to prevent duplicate entries.
+        """
+        async with self._lock.reader_lock:
+            if not self._user_queue:
+                return
+
+            # Only requeue if user is not already in queue
+            if not self._user_queue.has_email(user.email):
+                try:
+                    await self._user_queue.put(user)
+                except asyncio.QueueFull:
+                    pass
 
     async def flush_user_queue(self):
         async with self._lock.writer_lock:
@@ -194,7 +254,7 @@ class Controller:
                 except asyncio.QueueEmpty:
                     break
 
-            self._user_queue = asyncio.Queue(maxsize=10000)
+            self._user_queue = UserQueue(maxsize=10000)
 
         if self._notify_queue:
             try:

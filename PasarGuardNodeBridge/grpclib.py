@@ -1,6 +1,6 @@
 import asyncio
 
-from grpclib.client import Channel
+from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 
@@ -121,7 +121,7 @@ class Node(PasarGuardNode):
 
             return info
 
-    async def stop(self, timeout: int = 10) -> None:
+    async def stop(self, timeout: int = 15) -> None:
         """Stop the node with proper cleanup"""
         if await self.get_health() is Health.NOT_CONNECTED:
             return
@@ -138,21 +138,21 @@ class Node(PasarGuardNode):
             except Exception:
                 pass
 
-    async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
+    async def info(self, timeout: int = 15) -> service.BaseInfoResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetBaseInfo,
             request=service.Empty(),
             timeout=timeout,
         )
 
-    async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
+    async def get_system_stats(self, timeout: int = 15) -> service.SystemStatsResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetSystemStats,
             request=service.Empty(),
             timeout=timeout,
         )
 
-    async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
+    async def get_backend_stats(self, timeout: int = 15) -> service.BackendStatsResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetBackendStats,
             request=service.Empty(),
@@ -160,7 +160,7 @@ class Node(PasarGuardNode):
         )
 
     async def get_stats(
-        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 15
     ) -> service.StatResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetStats,
@@ -168,14 +168,14 @@ class Node(PasarGuardNode):
             timeout=timeout,
         )
 
-    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int = 15) -> service.OnlineStatResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetUserOnlineStats,
             request=service.StatRequest(name=email),
             timeout=timeout,
         )
 
-    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
+    async def get_user_online_ip_list(self, email: str, timeout: int = 15) -> service.StatsOnlineIpListResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetUserOnlineIpListStats,
             request=service.StatRequest(name=email),
@@ -183,7 +183,7 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
+        self, users: list[service.User], flush_queue: bool = False, timeout: int = 15
     ) -> service.Empty | None:
         if flush_queue:
             await self.flush_user_queue()
@@ -194,6 +194,30 @@ class Node(PasarGuardNode):
                 request=service.Users(users=users),
                 timeout=timeout,
             )
+
+    async def _sync_user_with_retry(
+        self, stream: Stream[service.User, service.Empty], user: service.User, max_retries: int = 3, timeout: int = 15
+    ) -> bool:
+        """
+        Attempt to sync a user via gRPC stream with retry logic for timeout errors.
+        Returns True if successful, False if all retries failed.
+        """
+        for attempt in range(max_retries):
+            try:
+                await asyncio.wait_for(stream.send_message(user), timeout=timeout)
+                return True
+            except asyncio.TimeoutError:
+                # Retry on timeout
+                if attempt < max_retries - 1:
+                    # Short delay before retry
+                    await asyncio.sleep(0.5)
+                    continue
+                # Last attempt failed
+                return False
+            except Exception:
+                # Other errors, don't retry
+                return False
+        return False
 
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
@@ -354,9 +378,11 @@ class Node(PasarGuardNode):
                                         stream_failed = True
                                         break
 
-                                    try:
-                                        await asyncio.wait_for(stream.send_message(user), timeout=10)
-                                    except Exception:
+                                    # Try to sync user with retries on timeout
+                                    success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
+                                    if not success:
+                                        # Failed after retries, requeue user if not already queued
+                                        await self.requeue_user_with_deduplication(user)
                                         stream_failed = True
                                         break
 
