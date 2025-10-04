@@ -213,7 +213,7 @@ class Node(PasarGuardNode):
 
         async with self._node_lock:
             return await self._make_request(
-                method="POST",
+                method="PUT",
                 endpoint="users/sync",
                 timeout=timeout,
                 proto_message=service.Users(users=users),
