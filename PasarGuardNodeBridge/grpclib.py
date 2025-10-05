@@ -59,7 +59,8 @@ class Node(PasarGuardNode):
             raise NodeAPIError(-1, "Request timed out")
         elif isinstance(error, GRPCError):
             http_status = grpc_to_http_status(error.status)
-            raise NodeAPIError(http_status, error.message)
+            message = error.message or "Unknown gRPC error"
+            raise NodeAPIError(http_status, message)
         elif isinstance(error, StreamTerminatedError):
             raise NodeAPIError(-1, f"Stream terminated: {str(error)}")
         else:
@@ -228,6 +229,9 @@ class Node(PasarGuardNode):
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
+        max_retries = 3
+        retry_delay = 2
+        retries = 0
         self.logger.info(f"[{self.name}] Health check task started")
 
         try:
@@ -243,10 +247,19 @@ class Node(PasarGuardNode):
                     if last_health != Health.HEALTHY:
                         self.logger.info(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
+                    retries = 0
                 except Exception as e:
-                    if last_health != Health.BROKEN:
-                        self.logger.error(f"[{self.name}] Health check failed: {e}, setting health to BROKEN")
-                        await self.set_health(Health.BROKEN)
+                    retries += 1
+                    if retries >= max_retries:
+                        if last_health != Health.BROKEN:
+                            self.logger.error(
+                                f"[{self.name}] Health check failed after {max_retries} retries: {e}, setting health to BROKEN"
+                            )
+                            await self.set_health(Health.BROKEN)
+                    else:
+                        self.logger.warning(f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}")
+                        await asyncio.sleep(retry_delay)
+                        continue
 
                 try:
                     await asyncio.wait_for(asyncio.sleep(health_check_interval), timeout=health_check_interval + 1)
@@ -416,13 +429,19 @@ class Node(PasarGuardNode):
 
                                     self.logger.info(f"[{self.name}] Syncing user {user.email}")
                                     success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
-                                    if not success:
+                                    if success:
+                                        self.logger.info(f"[{self.name}] Successfully synced user {user.email}")
+                                        sync_retry_delay = 1
+                                    else:
                                         self.logger.warning(
                                             f"[{self.name}] Failed to sync user {user.email}, requeueing"
                                         )
                                         await self.requeue_user_with_deduplication(user)
-                                        stream_failed = True
-                                        break
+                                        try:
+                                            await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+                                        except asyncio.TimeoutError:
+                                            pass
+                                        sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
 
                             except asyncio.CancelledError:
                                 self.logger.info(f"[{self.name}] User sync task cancelled")
@@ -434,8 +453,11 @@ class Node(PasarGuardNode):
                                 break
                             except Exception as e:
                                 self.logger.error(f"[{self.name}] An error occurred in user sync task: {e}")
-                                stream_failed = True
-                                break
+                                try:
+                                    await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+                                except asyncio.TimeoutError:
+                                    pass
+                                sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
                         if stream_failed:
                             break
 

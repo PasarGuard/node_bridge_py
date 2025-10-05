@@ -257,6 +257,9 @@ class Node(PasarGuardNode):
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
+        max_retries = 3
+        retry_delay = 2
+        retries = 0
         self.logger.info(f"[{self.name}] Health check task started")
 
         try:
@@ -272,10 +275,19 @@ class Node(PasarGuardNode):
                     if last_health != Health.HEALTHY:
                         self.logger.info(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
+                    retries = 0
                 except Exception as e:
-                    if last_health != Health.BROKEN:
-                        self.logger.error(f"[{self.name}] Health check failed: {e}, setting health to BROKEN")
-                        await self.set_health(Health.BROKEN)
+                    retries += 1
+                    if retries >= max_retries:
+                        if last_health != Health.BROKEN:
+                            self.logger.error(
+                                f"[{self.name}] Health check failed after {max_retries} retries: {e}, setting health to BROKEN"
+                            )
+                            await self.set_health(Health.BROKEN)
+                    else:
+                        self.logger.warning(f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}")
+                        await asyncio.sleep(retry_delay)
+                        continue
 
                 try:
                     await asyncio.wait_for(asyncio.sleep(health_check_interval), timeout=health_check_interval + 1)
