@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
@@ -18,10 +19,12 @@ class Node(PasarGuardNode):
         port: int,
         server_ca: str,
         api_key: str,
+        name: str = "default",
         extra: dict | None = None,
         max_logs: int = 1000,
+        logger: logging.Logger | None = None,
     ):
-        super().__init__(server_ca, api_key, extra, max_logs)
+        super().__init__(server_ca, api_key, name, extra, max_logs, logger)
 
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
@@ -225,20 +228,24 @@ class Node(PasarGuardNode):
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
+        self.logger.info(f"[{self.name}] Health check task started")
 
         try:
             while not self.is_shutting_down():
                 last_health = await self.get_health()
 
                 if last_health in (Health.NOT_CONNECTED, Health.INVALID):
+                    self.logger.info(f"[{self.name}] Health check task stopped due to node state")
                     return
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
                     if last_health != Health.HEALTHY:
+                        self.logger.info(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
-                except Exception:
+                except Exception as e:
                     if last_health != Health.BROKEN:
+                        self.logger.error(f"[{self.name}] Health check failed: {e}, setting health to BROKEN")
                         await self.set_health(Health.BROKEN)
 
                 try:
@@ -247,27 +254,33 @@ class Node(PasarGuardNode):
                     continue
 
         except asyncio.CancelledError:
-            pass
-        except Exception:
+            self.logger.info(f"[{self.name}] Health check task cancelled")
+        except Exception as e:
+            self.logger.error(f"[{self.name}] An unexpected error occurred in health check task: {e}")
             try:
                 await self.set_health(Health.BROKEN)
-            except Exception:
-                pass
+            except Exception as e_set_health:
+                self.logger.error(f"[{self.name}] Failed to set health to BROKEN after unexpected error: {e_set_health}")
+        finally:
+            self.logger.info(f"[{self.name}] Health check task finished")
 
     async def _fetch_logs(self):
         """Log fetching task with proper cancellation handling"""
         retry_delay = 10
         max_retry_delay = 60
         log_retry_delay = 1
+        self.logger.info(f"[{self.name}] Log fetching task started")
 
         try:
             while not self.is_shutting_down():
                 health = await self.get_health()
 
                 if health in (Health.NOT_CONNECTED, Health.INVALID):
+                    self.logger.info(f"[{self.name}] Log fetching task stopped due to node state")
                     break
 
                 if health == Health.BROKEN:
+                    self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before refetching logs")
                     try:
                         await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -279,8 +292,10 @@ class Node(PasarGuardNode):
 
                 stream_failed = False
                 try:
+                    self.logger.info(f"[{self.name}] Opening log stream")
                     async with self._client.GetLogs.open(metadata=self._metadata) as stream:
                         await stream.send_message(service.Empty())
+                        self.logger.info(f"[{self.name}] Log stream opened successfully")
                         log_retry_delay = 1
 
                         while not self.is_shutting_down():
@@ -300,11 +315,14 @@ class Node(PasarGuardNode):
                                 break
 
                 except asyncio.CancelledError:
+                    self.logger.info(f"[{self.name}] Log fetching task cancelled during stream")
                     break
-                except Exception:
+                except Exception as e:
+                    self.logger.error(f"[{self.name}] Log stream failed: {e}")
                     stream_failed = True
 
                 if stream_failed:
+                    self.logger.warning(f"[{self.name}] Log stream failed, retrying in {log_retry_delay} seconds")
                     try:
                         await asyncio.wait_for(asyncio.sleep(log_retry_delay), timeout=log_retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -312,22 +330,27 @@ class Node(PasarGuardNode):
                     log_retry_delay = min(log_retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
-            pass
+            self.logger.info(f"[{self.name}] Log fetching task cancelled")
+        finally:
+            self.logger.info(f"[{self.name}] Log fetching task finished")
 
     async def _sync_user(self):
         """User sync task with proper cancellation handling"""
         retry_delay = 10
         max_retry_delay = 60
         sync_retry_delay = 1
+        self.logger.info(f"[{self.name}] User sync task started")
 
         try:
             while not self.is_shutting_down():
                 health = await self.get_health()
 
                 if health in (Health.NOT_CONNECTED, Health.INVALID):
+                    self.logger.info(f"[{self.name}] User sync task stopped due to node state")
                     break
 
                 if health == Health.BROKEN:
+                    self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before syncing users")
                     try:
                         await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -339,7 +362,9 @@ class Node(PasarGuardNode):
 
                 stream_failed = False
                 try:
+                    self.logger.info(f"[{self.name}] Opening user sync stream")
                     async with self._client.SyncUser.open(metadata=self._metadata) as stream:
+                        self.logger.info(f"[{self.name}] User sync stream opened successfully")
                         sync_retry_delay = 1
                         while not self.is_shutting_down():
                             user_task = None
@@ -371,6 +396,7 @@ class Node(PasarGuardNode):
                                 if notify_task in done:
                                     notify_result = notify_task.result()
                                     if notify_result is None:
+                                        self.logger.info(f"[{self.name}] Received notification to stop user sync task")
                                         stream_failed = True
                                         break
                                     continue
@@ -378,36 +404,42 @@ class Node(PasarGuardNode):
                                 if user_task in done:
                                     user = user_task.result()
                                     if user is None:
+                                        self.logger.info(f"[{self.name}] Received None user, stopping user sync task")
                                         stream_failed = True
                                         break
 
-                                    # Try to sync user with retries on timeout
+                                    self.logger.info(f"[{self.name}] Syncing user {user.email}")
                                     success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
                                     if not success:
-                                        # Failed after retries, requeue user if not already queued
+                                        self.logger.warning(f"[{self.name}] Failed to sync user {user.email}, requeueing")
                                         await self.requeue_user_with_deduplication(user)
                                         stream_failed = True
                                         break
 
                             except asyncio.CancelledError:
+                                self.logger.info(f"[{self.name}] User sync task cancelled")
                                 if user_task and not user_task.done():
                                     user_task.cancel()
                                 if notify_task and not notify_task.done():
                                     notify_task.cancel()
                                 stream_failed = True
                                 break
-                            except Exception:
+                            except Exception as e:
+                                self.logger.error(f"[{self.name}] An error occurred in user sync task: {e}")
                                 stream_failed = True
                                 break
                         if stream_failed:
                             break
 
                 except asyncio.CancelledError:
+                    self.logger.info(f"[{self.name}] User sync stream cancelled")
                     break
-                except Exception:
+                except Exception as e:
+                    self.logger.error(f"[{self.name}] User sync stream failed: {e}")
                     stream_failed = True
 
                 if stream_failed:
+                    self.logger.warning(f"[{self.name}] User sync stream failed, retrying in {sync_retry_delay} seconds")
                     try:
                         await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -415,4 +447,6 @@ class Node(PasarGuardNode):
                     sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
-            pass
+            self.logger.info(f"[{self.name}] User sync task cancelled")
+        finally:
+            self.logger.info(f"[{self.name}] User sync task finished")

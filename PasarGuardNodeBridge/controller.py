@@ -1,6 +1,7 @@
 import ssl
 import asyncio
 import weakref
+import logging
 from enum import IntEnum
 from uuid import UUID
 from typing import Optional
@@ -44,27 +45,24 @@ class UserQueue(asyncio.Queue):
     def __init__(self, maxsize=0):
         super().__init__(maxsize)
         self._email_count: dict[str, int] = {}  # Track count of each email in queue
-        self._lock: asyncio.Lock = asyncio.Lock()
         self._closed = False
 
     async def close(self):
         """Close the queue and prevent further operations"""
-        async with self._lock:
-            self._closed = True
-            while not self.empty():
-                try:
-                    self.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+        self._closed = True
+        while not self.empty():
+            try:
+                self.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
     async def put(self, item):
         """Add user to queue and track their email"""
-        async with self._lock:
-            if self._closed:
-                return
-            if item and hasattr(item, "email"):
-                self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
-            await super().put(item)
+        if self._closed:
+            return
+        if item and hasattr(item, "email"):
+            self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
+        await super().put(item)
 
     def put_nowait(self, item):
         """Add user to queue without waiting and track their email"""
@@ -84,12 +82,11 @@ class UserQueue(asyncio.Queue):
 
     async def get(self):
         """Remove and return user from queue, updating email count"""
-        async with self._lock:
-            if self._closed:
-                return
-            item = await super().get()
-            self._update_email_count(item)
-            return item
+        if self._closed:
+            return
+        item = await super().get()
+        self._update_email_count(item)
+        return item
 
     def get_nowait(self):
         """Remove and return user from queue without waiting, updating email count"""
@@ -121,10 +118,28 @@ class Health(IntEnum):
 
 
 class Controller:
-    def __init__(self, server_ca: str, api_key: str, extra: dict | None = None, max_logs: int = 1000):
+    def __init__(
+        self,
+        server_ca: str,
+        api_key: str,
+        name: str = "default",
+        extra: dict | None = None,
+        max_logs: int = 1000,
+        logger: logging.Logger | None = None,
+    ):
         self.max_logs = max_logs
+        self.name = name
         if extra is None:
             extra = {}
+        if logger is None:
+            logger = logging.getLogger(self.name)
+            logger.setLevel(logging.INFO)
+            handler = logging.StreamHandler()
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            )
+            logger.addHandler(handler)
+        self.logger = logger
         try:
             self.api_key = UUID(api_key)
 
