@@ -43,23 +43,40 @@ class UserQueue(asyncio.Queue):
 
     def __init__(self, maxsize=0):
         super().__init__(maxsize)
-        self._email_count = {}  # Track count of each email in queue
+        self._email_count: dict[str, int] = {}  # Track count of each email in queue
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self._closed = False
+
+    async def close(self):
+        """Close the queue and prevent further operations"""
+        async with self._lock:
+            self._closed = True
+            while not self.empty():
+                try:
+                    self.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
     async def put(self, item):
         """Add user to queue and track their email"""
-        if item and hasattr(item, 'email'):
-            self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
-        await super().put(item)
+        async with self._lock:
+            if self._closed:
+                return
+            if item and hasattr(item, "email"):
+                self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
+            await super().put(item)
 
     def put_nowait(self, item):
         """Add user to queue without waiting and track their email"""
-        if item and hasattr(item, 'email'):
+        if self._closed:
+            return
+        if item and hasattr(item, "email"):
             self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
         super().put_nowait(item)
 
     def _update_email_count(self, item):
         """Update email count when removing a user from queue"""
-        if item and hasattr(item, 'email'):
+        if item and hasattr(item, "email"):
             if item.email in self._email_count:
                 self._email_count[item.email] -= 1
                 if self._email_count[item.email] <= 0:
@@ -67,12 +84,17 @@ class UserQueue(asyncio.Queue):
 
     async def get(self):
         """Remove and return user from queue, updating email count"""
-        item = await super().get()
-        self._update_email_count(item)
-        return item
+        async with self._lock:
+            if self._closed:
+                return
+            item = await super().get()
+            self._update_email_count(item)
+            return item
 
     def get_nowait(self):
         """Remove and return user from queue without waiting, updating email count"""
+        if self._closed:
+            return
         item = super().get_nowait()
         self._update_email_count(item)
         return item
@@ -172,13 +194,9 @@ class Controller:
 
     async def flush_user_queue(self):
         async with self._lock.writer_lock:
-            if not self._user_queue:
-                return
-            while not self._user_queue.empty():
-                try:
-                    self._user_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+            if self._user_queue:
+                await self._user_queue.close()
+                self._user_queue = UserQueue(10000)
 
     async def get_logs(self) -> asyncio.Queue | None:
         async with self._lock.reader_lock:
@@ -217,9 +235,9 @@ class Controller:
 
     async def disconnect(self):
         await self.set_health(Health.NOT_CONNECTED)
-        self._shutdown_event.set()
 
         async with self._lock.writer_lock:
+            self._shutdown_event.set()
             await self._cleanup_tasks()
             await self._cleanup_queues()
 
@@ -228,51 +246,53 @@ class Controller:
 
     async def _cleanup_tasks(self):
         """Clean up all background tasks properly"""
-        if self._tasks:
-            for task in self._tasks:
-                if not task.done():
-                    task.cancel()
+        async with self._lock.writer_lock:
+            if self._tasks:
+                for task in self._tasks:
+                    if not task.done():
+                        task.cancel()
 
-            try:
-                await asyncio.wait_for(asyncio.gather(*self._tasks, return_exceptions=True), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
+                try:
+                    await asyncio.wait_for(asyncio.gather(*self._tasks, return_exceptions=True), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
 
-            self._tasks.clear()
+                self._tasks.clear()
 
     async def _cleanup_queues(self):
         """Properly clean up all queues"""
-        if self._user_queue:
-            try:
-                await asyncio.wait_for(self._user_queue.put(None), timeout=0.1)
-            except (asyncio.TimeoutError, asyncio.QueueFull):
-                pass
-
-            while not self._user_queue.empty():
+        async with self._lock.writer_lock:
+            if self._user_queue:
                 try:
-                    self._user_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+                    await asyncio.wait_for(self._user_queue.put(None), timeout=0.1)
+                except (asyncio.TimeoutError, asyncio.QueueFull):
+                    pass
 
-            self._user_queue = UserQueue(maxsize=10000)
+                while not self._user_queue.empty():
+                    try:
+                        self._user_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
-        if self._notify_queue:
-            try:
-                await asyncio.wait_for(self._notify_queue.put(None), timeout=0.1)
-            except (asyncio.TimeoutError, asyncio.QueueFull):
-                pass
+                self._user_queue = UserQueue(maxsize=10000)
 
-            while not self._notify_queue.empty():
+            if self._notify_queue:
                 try:
-                    self._notify_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+                    await asyncio.wait_for(self._notify_queue.put(None), timeout=0.1)
+                except (asyncio.TimeoutError, asyncio.QueueFull):
+                    pass
 
-            self._notify_queue = asyncio.Queue(maxsize=10)
+                while not self._notify_queue.empty():
+                    try:
+                        self._notify_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
-        if self._logs_queue:
-            await self._logs_queue.close()
-            self._logs_queue = RollingQueue(self.max_logs)
+                self._notify_queue = asyncio.Queue(maxsize=10)
+
+            if self._logs_queue:
+                await self._logs_queue.close()
+                self._logs_queue = RollingQueue(self.max_logs)
 
     def is_shutting_down(self) -> bool:
         """Check if the node is shutting down"""

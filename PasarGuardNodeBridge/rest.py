@@ -110,7 +110,7 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-4, detail="Invalid node")
 
         async with self._node_lock:
-            response = await self._make_request(
+            response: service.BaseInfoResponse = await self._make_request(
                 method="POST",
                 endpoint="start",
                 timeout=timeout,
@@ -123,6 +123,9 @@ class Node(PasarGuardNode):
                 ),
                 proto_response_class=service.BaseInfoResponse,
             )
+
+            if not response.started:
+                raise NodeAPIError(500, "Failed to start the node")
 
             tasks = []
             try:

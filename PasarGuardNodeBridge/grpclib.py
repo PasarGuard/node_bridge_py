@@ -91,11 +91,14 @@ class Node(PasarGuardNode):
         )
 
         async with self._node_lock:
-            info = await self._handle_grpc_request(
+            info: service.BaseInfoResponse = await self._handle_grpc_request(
                 method=self._client.Start,
                 request=req,
                 timeout=timeout,
             )
+
+            if not info.started:
+                raise NodeAPIError(500, "Failed to start the node")
 
             tasks = []
             try:
@@ -228,7 +231,7 @@ class Node(PasarGuardNode):
                 last_health = await self.get_health()
 
                 if last_health in (Health.NOT_CONNECTED, Health.INVALID):
-                    break
+                    return
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)

@@ -250,7 +250,7 @@ wheels = [
 
 [[package]]
 name = "pasarguard-node-bridge"
-version = "0.0.51"
+version = "0.0.52"
 source = { editable = "." }
 dependencies = [
     { name = "aiorwlock" },
