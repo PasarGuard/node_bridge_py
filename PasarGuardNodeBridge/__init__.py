@@ -12,14 +12,16 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: PasarGuard
-Version: 0.0.53
+Version: 0.0.54
 """
 
-__version__ = "0.0.53"
+__version__ = "0.0.54"
 __author__ = "PasarGuard"
 
 
 from enum import Enum
+import logging
+from typing import Optional
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.grpclib import Node as GrpcNode
@@ -39,8 +41,10 @@ def create_node(
     port: int,
     server_ca: str,
     api_key: str,
+    name: str = "default",
     max_logs: int = 1000,
     extra: dict = {},
+    logger: Optional[logging.Logger] = None,
 ) -> PasarGuardNode:
     """
     Create and initialize a PasarGuard node instance using the specified connection type.
@@ -75,8 +79,10 @@ def create_node(
             port=port,
             server_ca=server_ca,
             api_key=api_key,
+            name=name,
             extra=extra,
             max_logs=max_logs,
+            logger=logger,
         )
 
     elif connection is NodeType.rest:
@@ -85,8 +91,10 @@ def create_node(
             port=port,
             server_ca=server_ca,
             api_key=api_key,
+            name=name,
             extra=extra,
             max_logs=max_logs,
+            logger=logger,
         )
 
     else:
