@@ -260,7 +260,9 @@ class Node(PasarGuardNode):
             try:
                 await self.set_health(Health.BROKEN)
             except Exception as e_set_health:
-                self.logger.error(f"[{self.name}] Failed to set health to BROKEN after unexpected error: {e_set_health}")
+                self.logger.error(
+                    f"[{self.name}] Failed to set health to BROKEN after unexpected error: {e_set_health}"
+                )
         finally:
             self.logger.info(f"[{self.name}] Health check task finished")
 
@@ -280,7 +282,9 @@ class Node(PasarGuardNode):
                     break
 
                 if health == Health.BROKEN:
-                    self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before refetching logs")
+                    self.logger.warning(
+                        f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before refetching logs"
+                    )
                     try:
                         await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -350,7 +354,9 @@ class Node(PasarGuardNode):
                     break
 
                 if health == Health.BROKEN:
-                    self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before syncing users")
+                    self.logger.warning(
+                        f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before syncing users"
+                    )
                     try:
                         await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -411,7 +417,9 @@ class Node(PasarGuardNode):
                                     self.logger.info(f"[{self.name}] Syncing user {user.email}")
                                     success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
                                     if not success:
-                                        self.logger.warning(f"[{self.name}] Failed to sync user {user.email}, requeueing")
+                                        self.logger.warning(
+                                            f"[{self.name}] Failed to sync user {user.email}, requeueing"
+                                        )
                                         await self.requeue_user_with_deduplication(user)
                                         stream_failed = True
                                         break
@@ -439,7 +447,9 @@ class Node(PasarGuardNode):
                     stream_failed = True
 
                 if stream_failed:
-                    self.logger.warning(f"[{self.name}] User sync stream failed, retrying in {sync_retry_delay} seconds")
+                    self.logger.warning(
+                        f"[{self.name}] User sync stream failed, retrying in {sync_retry_delay} seconds"
+                    )
                     try:
                         await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                     except asyncio.TimeoutError:

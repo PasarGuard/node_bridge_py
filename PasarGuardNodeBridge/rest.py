@@ -289,7 +289,9 @@ class Node(PasarGuardNode):
             try:
                 await self.set_health(Health.BROKEN)
             except Exception as e_set_health:
-                self.logger.error(f"[{self.name}] Failed to set health to BROKEN after unexpected error: {e_set_health}")
+                self.logger.error(
+                    f"[{self.name}] Failed to set health to BROKEN after unexpected error: {e_set_health}"
+                )
         finally:
             self.logger.info(f"[{self.name}] Health check task finished")
 
@@ -309,7 +311,9 @@ class Node(PasarGuardNode):
                     break
 
                 if health == Health.BROKEN:
-                    self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before refetching logs")
+                    self.logger.warning(
+                        f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before refetching logs"
+                    )
                     try:
                         await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
                     except asyncio.TimeoutError:
@@ -378,7 +382,9 @@ class Node(PasarGuardNode):
                     break
 
                 if health == Health.BROKEN:
-                    self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before syncing users")
+                    self.logger.warning(
+                        f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before syncing users"
+                    )
                     try:
                         await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
                     except asyncio.TimeoutError:
