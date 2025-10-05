@@ -244,7 +244,6 @@ class Controller:
             self._node_version = node_version
             self._core_version = core_version
             self._health = Health.HEALTHY
-            self._shutdown_event.clear()
 
     async def disconnect(self):
         await self.set_health(Health.NOT_CONNECTED)

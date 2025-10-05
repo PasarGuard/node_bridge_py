@@ -130,6 +130,9 @@ class Node(PasarGuardNode):
             if not response.started:
                 raise NodeAPIError(500, "Failed to start the node")
 
+            # Clear shutdown event before creating tasks
+            self._shutdown_event.clear()
+
             tasks = []
             try:
                 health_task = asyncio.create_task(self._check_node_health(), name=f"health_check_{id(self)}")
