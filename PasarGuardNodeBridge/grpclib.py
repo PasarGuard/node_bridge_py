@@ -81,7 +81,7 @@ class Node(PasarGuardNode):
         keep_alive: int = 0,
         ghather_logs: bool = True,
         exclude_inbounds: list[str] = [],
-        timeout: int = 15,
+        timeout: int = 10,
     ) -> service.BaseInfoResponse | None:
         """Start the node with proper task management"""
         health = await self.get_health()
@@ -131,7 +131,7 @@ class Node(PasarGuardNode):
 
             return info
 
-    async def stop(self, timeout: int = 15) -> None:
+    async def stop(self, timeout: int = 10) -> None:
         """Stop the node with proper cleanup"""
         if await self.get_health() is Health.NOT_CONNECTED:
             return
@@ -148,21 +148,21 @@ class Node(PasarGuardNode):
             except Exception:
                 pass
 
-    async def info(self, timeout: int = 15) -> service.BaseInfoResponse | None:
+    async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetBaseInfo,
             request=service.Empty(),
             timeout=timeout,
         )
 
-    async def get_system_stats(self, timeout: int = 15) -> service.SystemStatsResponse | None:
+    async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetSystemStats,
             request=service.Empty(),
             timeout=timeout,
         )
 
-    async def get_backend_stats(self, timeout: int = 15) -> service.BackendStatsResponse | None:
+    async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetBackendStats,
             request=service.Empty(),
@@ -170,7 +170,7 @@ class Node(PasarGuardNode):
         )
 
     async def get_stats(
-        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 15
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
     ) -> service.StatResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetStats,
@@ -178,14 +178,14 @@ class Node(PasarGuardNode):
             timeout=timeout,
         )
 
-    async def get_user_online_stats(self, email: str, timeout: int = 15) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetUserOnlineStats,
             request=service.StatRequest(name=email),
             timeout=timeout,
         )
 
-    async def get_user_online_ip_list(self, email: str, timeout: int = 15) -> service.StatsOnlineIpListResponse | None:
+    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
         return await self._handle_grpc_request(
             method=self._client.GetUserOnlineIpListStats,
             request=service.StatRequest(name=email),
@@ -193,7 +193,7 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_queue: bool = False, timeout: int = 15
+        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
     ) -> service.Empty | None:
         if flush_queue:
             await self.flush_user_queue()
@@ -206,7 +206,7 @@ class Node(PasarGuardNode):
             )
 
     async def _sync_user_with_retry(
-        self, stream: Stream[service.User, service.Empty], user: service.User, max_retries: int = 3, timeout: int = 15
+        self, stream: Stream[service.User, service.Empty], user: service.User, max_retries: int = 3, timeout: int = 10
     ) -> bool:
         """
         Attempt to sync a user via gRPC stream with retry logic for timeout errors.

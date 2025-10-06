@@ -103,7 +103,7 @@ class Node(PasarGuardNode):
         keep_alive: int = 0,
         ghather_logs: bool = True,
         exclude_inbounds: list[str] = [],
-        timeout: int = 15,
+        timeout: int = 10,
     ):
         """Start the node with proper task management"""
         health = await self.get_health()
@@ -157,7 +157,7 @@ class Node(PasarGuardNode):
 
         return response
 
-    async def stop(self, timeout: int = 15) -> None:
+    async def stop(self, timeout: int = 10) -> None:
         """Stop the node with proper cleanup"""
         if await self.get_health() is Health.NOT_CONNECTED:
             return
@@ -170,23 +170,23 @@ class Node(PasarGuardNode):
             except Exception:
                 pass
 
-    async def info(self, timeout: int = 15) -> service.BaseInfoResponse | None:
+    async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
         return await self._make_request(
             method="GET", endpoint="info", timeout=timeout, proto_response_class=service.BaseInfoResponse
         )
 
-    async def get_system_stats(self, timeout: int = 15) -> service.SystemStatsResponse | None:
+    async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
         return await self._make_request(
             method="GET", endpoint="stats/system", timeout=timeout, proto_response_class=service.SystemStatsResponse
         )
 
-    async def get_backend_stats(self, timeout: int = 15) -> service.BackendStatsResponse | None:
+    async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
         return await self._make_request(
             method="GET", endpoint="stats/backend", timeout=timeout, proto_response_class=service.BackendStatsResponse
         )
 
     async def get_stats(
-        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 15
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
     ) -> service.StatResponse | None:
         return await self._make_request(
             method="GET",
@@ -196,7 +196,7 @@ class Node(PasarGuardNode):
             proto_response_class=service.StatResponse,
         )
 
-    async def get_user_online_stats(self, email: str, timeout: int = 15) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
         return await self._make_request(
             method="GET",
             endpoint="stats/user/online",
@@ -205,7 +205,7 @@ class Node(PasarGuardNode):
             proto_response_class=service.OnlineStatResponse,
         )
 
-    async def get_user_online_ip_list(self, email: str, timeout: int = 15) -> service.StatsOnlineIpListResponse | None:
+    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
         return await self._make_request(
             method="GET",
             endpoint="stats/user/online_ip",
@@ -215,7 +215,7 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_queue: bool = False, timeout: int = 15
+        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
     ) -> service.Empty | None:
         if flush_queue:
             await self.flush_user_queue()
