@@ -1,13 +1,12 @@
 [project]
 name = "pasarguard-node-bridge"
-version = "0.0.59"
+version = "0.0.60"
 description = "python package to connect your project with PasarGuard node go"
 url = "https://github.com/PasarGuard/node_bridge_py"
 keywords = ["PasarGuard-Node", "PasarGuard", "PasarGuard-panel", "PasarGuard python", "PasarGuard API"]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiorwlock>=1.5.0",
     "grpclib>=0.4.8",
     "httpx>=0.28.1",
     "protobuf>=6.31.1",

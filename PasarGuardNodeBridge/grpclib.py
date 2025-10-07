@@ -105,7 +105,7 @@ class Node(PasarGuardNode):
                 raise NodeAPIError(500, "Failed to start the node")
 
             try:
-                tasks = [self._check_node_health, self._sync_user]
+                tasks = [self._sync_user]
 
                 if ghather_logs:
                     tasks.append(self._fetch_logs)
@@ -205,13 +205,24 @@ class Node(PasarGuardNode):
             except asyncio.TimeoutError:
                 # Retry on timeout
                 if attempt < max_retries - 1:
-                    # Short delay before retry
+                    self.logger.debug(
+                        f"[{self.name}] Timeout syncing user {user.email}, retry {attempt + 1}/{max_retries} | "
+                        f"Error: TimeoutError"
+                    )
                     await asyncio.sleep(0.5)
                     continue
                 # Last attempt failed
+                self.logger.warning(
+                    f"[{self.name}] Failed to sync user {user.email} after {max_retries} timeout attempts"
+                )
                 return False
-            except Exception:
+            except Exception as e:
                 # Other errors, don't retry
+                error_type = type(e).__name__
+                self.logger.error(
+                    f"[{self.name}] Unexpected error syncing user {user.email} | " f"Error: {error_type} - {str(e)}",
+                    exc_info=True,
+                )
                 return False
         return False
 
@@ -239,15 +250,18 @@ class Node(PasarGuardNode):
                     retries = 0
                 except Exception as e:
                     retries += 1
+                    error_type = type(e).__name__
                     if retries >= max_retries:
                         if last_health != Health.BROKEN:
                             self.logger.error(
-                                f"[{self.name}] Health check failed after {max_retries} retries: {e}, setting health to BROKEN"
+                                f"[{self.name}] Health check failed after {max_retries} retries, setting health to BROKEN | "
+                                f"Error: {error_type} - {str(e)}"
                             )
                             await self.set_health(Health.BROKEN)
                     else:
                         self.logger.warning(
-                            f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}"
+                            f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s | "
+                            f"Error: {error_type} - {str(e)}"
                         )
                         await asyncio.sleep(retry_delay)
                         continue
@@ -260,206 +274,277 @@ class Node(PasarGuardNode):
         except asyncio.CancelledError:
             self.logger.info(f"[{self.name}] Health check task cancelled")
         except Exception as e:
-            self.logger.error(f"[{self.name}] An unexpected error occurred in health check task: {e}")
+            error_type = type(e).__name__
+            self.logger.error(
+                f"[{self.name}] Unexpected error in health check task | Error: {error_type} - {str(e)}", exc_info=True
+            )
             try:
                 await self.set_health(Health.BROKEN)
             except Exception as e_set_health:
+                error_type_set = type(e_set_health).__name__
                 self.logger.error(
-                    f"[{self.name}] Failed to set health to BROKEN after unexpected error: {e_set_health}"
+                    f"[{self.name}] Failed to set health to BROKEN | Error: {error_type_set} - {str(e_set_health)}",
+                    exc_info=True,
                 )
         finally:
             self.logger.info(f"[{self.name}] Health check task finished")
 
+    async def _should_continue_task(self, task_name: str) -> bool:
+        """Check if task should continue based on health status.
+
+        Returns:
+            True if task should continue, False if task should stop
+        """
+        health = await self.get_health()
+
+        if health in (Health.NOT_CONNECTED, Health.INVALID):
+            self.logger.info(f"[{self.name}] {task_name} stopped due to node state")
+            return False
+        return True
+
+    async def _wait_for_healthy_state(self, retry_delay: float, max_retry_delay: float) -> float:
+        """Wait if node is broken, returns updated retry_delay."""
+        health = await self.get_health()
+
+        if health == Health.BROKEN:
+            self.logger.warning(f"[{self.name}] Node is broken, waiting for {retry_delay} seconds")
+            try:
+                await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
+            except asyncio.TimeoutError:
+                pass
+            return min(retry_delay * 1.5, max_retry_delay)
+        return retry_delay
+
+    async def _receive_and_process_logs(self, stream) -> bool:
+        """Receive and process log messages from gRPC stream.
+
+        Returns:
+            True if stream completed successfully, False if stream failed
+        """
+        while not self.is_shutting_down():
+            try:
+                log = await asyncio.wait_for(stream.recv_message(), timeout=30)
+                if log is None:
+                    continue
+
+                logs_queue = await self.get_logs()
+                if logs_queue:
+                    await logs_queue.put(log.detail)
+
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                return False
+
+        return True
+
+    async def _open_and_process_log_stream(self) -> bool:
+        """Open gRPC log stream and process it.
+
+        Returns:
+            True if successful, False if failed
+        """
+        try:
+            self.logger.info(f"[{self.name}] Opening log stream")
+            async with self._client.GetLogs.open(metadata=self._metadata) as stream:
+                await stream.send_message(service.Empty())
+                self.logger.info(f"[{self.name}] Log stream opened successfully")
+                return await self._receive_and_process_logs(stream)
+        except asyncio.CancelledError:
+            self.logger.info(f"[{self.name}] Log stream cancelled")
+            raise
+        except Exception as e:
+            error_type = type(e).__name__
+            self.logger.error(f"[{self.name}] Log stream failed | Error: {error_type} - {str(e)}", exc_info=True)
+            return False
+
     async def _fetch_logs(self):
         """Log fetching task with proper cancellation handling"""
-        retry_delay = 10
-        max_retry_delay = 60
-        log_retry_delay = 1
+        retry_delay = 10.0
+        max_retry_delay = 60.0
+        log_retry_delay = 1.0
         self.logger.info(f"[{self.name}] Log fetching task started")
 
         try:
             while not self.is_shutting_down():
-                health = await self.get_health()
-
-                if health in (Health.NOT_CONNECTED, Health.INVALID):
-                    self.logger.info(f"[{self.name}] Log fetching task stopped due to node state")
+                if not await self._should_continue_task("Log fetching task"):
                     break
 
+                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                health = await self.get_health()
                 if health == Health.BROKEN:
-                    self.logger.warning(
-                        f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before refetching logs"
-                    )
-                    try:
-                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
-                    except asyncio.TimeoutError:
-                        pass
-                    retry_delay = min(retry_delay * 1.5, max_retry_delay)
                     continue
 
-                retry_delay = 10
+                # Reset retry delay when healthy
+                retry_delay = 10.0
 
-                stream_failed = False
-                try:
-                    self.logger.info(f"[{self.name}] Opening log stream")
-                    async with self._client.GetLogs.open(metadata=self._metadata) as stream:
-                        await stream.send_message(service.Empty())
-                        self.logger.info(f"[{self.name}] Log stream opened successfully")
-                        log_retry_delay = 1
+                # Try to open and process log stream
+                stream_success = await self._open_and_process_log_stream()
 
-                        while not self.is_shutting_down():
-                            try:
-                                log = await asyncio.wait_for(stream.recv_message(), timeout=30)
-                                if log is None:
-                                    continue
-
-                                logs_queue = await self.get_logs()
-                                if logs_queue:
-                                    await logs_queue.put(log.detail)
-
-                            except asyncio.TimeoutError:
-                                continue
-                            except Exception:
-                                stream_failed = True
-                                break
-
-                except asyncio.CancelledError:
-                    self.logger.info(f"[{self.name}] Log fetching task cancelled during stream")
-                    break
-                except Exception as e:
-                    self.logger.error(f"[{self.name}] Log stream failed: {e}")
-                    stream_failed = True
-
-                if stream_failed:
+                if not stream_success:
                     self.logger.warning(f"[{self.name}] Log stream failed, retrying in {log_retry_delay} seconds")
                     try:
                         await asyncio.wait_for(asyncio.sleep(log_retry_delay), timeout=log_retry_delay + 1)
                     except asyncio.TimeoutError:
                         pass
                     log_retry_delay = min(log_retry_delay * 2, max_retry_delay)
+                else:
+                    log_retry_delay = 1.0
 
         except asyncio.CancelledError:
             self.logger.info(f"[{self.name}] Log fetching task cancelled")
         finally:
             self.logger.info(f"[{self.name}] Log fetching task finished")
 
+    async def _get_user_queues(self):
+        """Get user and notify queue references with minimal lock scope.
+
+        Returns:
+            Tuple of (user_queue, notify_queue) or (None, None) if unavailable
+        """
+        async with self._queue_lock:
+            return self._user_queue, self._notify_queue
+
+    async def _wait_for_user_or_notification(self, user_queue, notify_queue):
+        """Wait for either a user or notification from queues.
+
+        Returns:
+            Tuple of (done_tasks, user_task, notify_task)
+        """
+        user_task = asyncio.create_task(user_queue.get())
+        notify_task = asyncio.create_task(notify_queue.get())
+
+        done, pending = await asyncio.wait([user_task, notify_task], return_when=asyncio.FIRST_COMPLETED, timeout=30)
+
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        return done, user_task, notify_task
+
+    async def _handle_user_sync_stream(self, stream, user, sync_retry_delay: float, max_retry_delay: float) -> float:
+        """Sync a single user via gRPC stream and handle retry logic.
+
+        Returns:
+            Updated sync_retry_delay
+        """
+        self.logger.info(f"[{self.name}] Syncing user {user.email}")
+        success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
+
+        if success:
+            self.logger.info(f"[{self.name}] Successfully synced user {user.email}")
+            return 1.0
+        else:
+            self.logger.warning(f"[{self.name}] Failed to sync user {user.email}, requeueing")
+            await self.requeue_user_with_deduplication(user)
+            try:
+                await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+            except asyncio.TimeoutError:
+                pass
+            return min(sync_retry_delay * 2, max_retry_delay)
+
+    async def _process_user_sync_stream(self, stream, sync_retry_delay: float, max_retry_delay: float):
+        """Process user sync stream, handling users and notifications.
+
+        Returns:
+            Tuple of (stream_failed, updated_sync_retry_delay)
+        """
+        while not self.is_shutting_down():
+            try:
+                # Get queue references
+                user_queue, notify_queue = await self._get_user_queues()
+
+                if user_queue is None or notify_queue is None:
+                    return True, sync_retry_delay
+
+                # Wait for user or notification
+                done, user_task, notify_task = await self._wait_for_user_or_notification(user_queue, notify_queue)
+
+                if not done:
+                    continue
+
+                # Handle notification
+                if notify_task in done:
+                    notify_result = notify_task.result()
+                    if notify_result is None:
+                        self.logger.info(f"[{self.name}] Received notification to renew queues, breaking stream")
+                        return True, sync_retry_delay
+                    continue
+
+                # Handle user sync
+                if user_task in done:
+                    user = user_task.result()
+                    if user is None:
+                        self.logger.info(f"[{self.name}] Received None user, breaking stream to renew queues")
+                        return True, sync_retry_delay
+
+                    sync_retry_delay = await self._handle_user_sync_stream(
+                        stream, user, sync_retry_delay, max_retry_delay
+                    )
+
+            except asyncio.CancelledError:
+                self.logger.info(f"[{self.name}] User sync stream processing cancelled")
+                raise
+            except Exception as e:
+                error_type = type(e).__name__
+                self.logger.error(
+                    f"[{self.name}] Error in user sync stream | Error: {error_type} - {str(e)}", exc_info=True
+                )
+                try:
+                    await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+                except asyncio.TimeoutError:
+                    pass
+                sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
+
+        return False, sync_retry_delay
+
+    async def _open_and_process_user_sync_stream(self, sync_retry_delay: float, max_retry_delay: float):
+        """Open user sync stream and process it.
+
+        Returns:
+            Tuple of (stream_failed, updated_sync_retry_delay)
+        """
+        try:
+            self.logger.info(f"[{self.name}] Opening user sync stream")
+            async with self._client.SyncUser.open(metadata=self._metadata) as stream:
+                self.logger.info(f"[{self.name}] User sync stream opened successfully")
+                return await self._process_user_sync_stream(stream, 1.0, max_retry_delay)
+        except asyncio.CancelledError:
+            self.logger.info(f"[{self.name}] User sync stream cancelled")
+            raise
+        except Exception as e:
+            error_type = type(e).__name__
+            self.logger.error(f"[{self.name}] User sync stream failed | Error: {error_type} - {str(e)}", exc_info=True)
+            return True, sync_retry_delay
+
     async def _sync_user(self):
         """User sync task with proper cancellation handling"""
-        retry_delay = 10
-        max_retry_delay = 60
-        sync_retry_delay = 1
+        retry_delay = 10.0
+        max_retry_delay = 60.0
+        sync_retry_delay = 1.0
         self.logger.info(f"[{self.name}] User sync task started")
 
         try:
             while not self.is_shutting_down():
-                health = await self.get_health()
-
-                if health in (Health.NOT_CONNECTED, Health.INVALID):
-                    self.logger.info(f"[{self.name}] User sync task stopped due to node state")
+                if not await self._should_continue_task("User sync task"):
                     break
 
+                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                health = await self.get_health()
                 if health == Health.BROKEN:
-                    self.logger.warning(
-                        f"[{self.name}] Node is broken, waiting for {retry_delay} seconds before syncing users"
-                    )
-                    try:
-                        await asyncio.wait_for(asyncio.sleep(retry_delay), timeout=retry_delay + 1)
-                    except asyncio.TimeoutError:
-                        pass
-                    retry_delay = min(retry_delay * 1.5, max_retry_delay)
                     continue
 
-                retry_delay = 10
+                # Reset retry delay when healthy
+                retry_delay = 10.0
 
-                stream_failed = False
-                try:
-                    self.logger.info(f"[{self.name}] Opening user sync stream")
-                    async with self._client.SyncUser.open(metadata=self._metadata) as stream:
-                        self.logger.info(f"[{self.name}] User sync stream opened successfully")
-                        sync_retry_delay = 1
-                        while not self.is_shutting_down():
-                            user_task = None
-                            notify_task = None
-
-                            try:
-                                async with self._lock.reader_lock:
-                                    if self._user_queue is None or self._notify_queue is None:
-                                        stream_failed = True
-                                        break
-
-                                    user_task = asyncio.create_task(self._user_queue.get())
-                                    notify_task = asyncio.create_task(self._notify_queue.get())
-
-                                done, pending = await asyncio.wait(
-                                    [user_task, notify_task], return_when=asyncio.FIRST_COMPLETED, timeout=30
-                                )
-
-                                for task in pending:
-                                    task.cancel()
-                                    try:
-                                        await task
-                                    except asyncio.CancelledError:
-                                        pass
-
-                                if not done:
-                                    continue
-
-                                if notify_task in done:
-                                    notify_result = notify_task.result()
-                                    if notify_result is None:
-                                        self.logger.info(f"[{self.name}] Received notification to renew queues, breaking stream")
-                                        stream_failed = True
-                                        break
-                                    continue
-
-                                if user_task in done:
-                                    user = user_task.result()
-                                    if user is None:
-                                        self.logger.info(f"[{self.name}] Received None user, breaking stream to renew queues")
-                                        stream_failed = True
-                                        break
-
-                                    self.logger.info(f"[{self.name}] Syncing user {user.email}")
-                                    success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
-                                    if success:
-                                        self.logger.info(f"[{self.name}] Successfully synced user {user.email}")
-                                        sync_retry_delay = 1
-                                    else:
-                                        self.logger.warning(
-                                            f"[{self.name}] Failed to sync user {user.email}, requeueing"
-                                        )
-                                        await self.requeue_user_with_deduplication(user)
-                                        try:
-                                            await asyncio.wait_for(
-                                                asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1
-                                            )
-                                        except asyncio.TimeoutError:
-                                            pass
-                                        sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
-
-                            except asyncio.CancelledError:
-                                self.logger.info(f"[{self.name}] User sync task cancelled")
-                                if user_task and not user_task.done():
-                                    user_task.cancel()
-                                if notify_task and not notify_task.done():
-                                    notify_task.cancel()
-                                stream_failed = True
-                                break
-                            except Exception as e:
-                                self.logger.error(f"[{self.name}] An error occurred in user sync task: {e}")
-                                try:
-                                    await asyncio.wait_for(
-                                        asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1
-                                    )
-                                except asyncio.TimeoutError:
-                                    pass
-                                sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
-
-                except asyncio.CancelledError:
-                    self.logger.info(f"[{self.name}] User sync stream cancelled")
-                    break
-                except Exception as e:
-                    self.logger.error(f"[{self.name}] User sync stream failed: {e}")
-                    stream_failed = True
+                # Try to open and process user sync stream
+                stream_failed, sync_retry_delay = await self._open_and_process_user_sync_stream(
+                    sync_retry_delay, max_retry_delay
+                )
 
                 if stream_failed:
                     self.logger.warning(
