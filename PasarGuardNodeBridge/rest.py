@@ -130,29 +130,15 @@ class Node(PasarGuardNode):
             if not response.started:
                 raise NodeAPIError(500, "Failed to start the node")
 
-            # Clear shutdown event before creating tasks
-            self._shutdown_event.clear()
-
-            tasks = []
             try:
-                health_task = asyncio.create_task(self._check_node_health(), name=f"health_check_{id(self)}")
-                sync_task = asyncio.create_task(self._sync_user(), name=f"sync_user_{id(self)}")
-                tasks.extend([health_task, sync_task])
+                tasks = [self._check_node_health, self._sync_user]
 
                 if ghather_logs:
-                    logs_task = asyncio.create_task(self._fetch_logs(), name=f"fetch_logs_{id(self)}")
-                    tasks.append(logs_task)
+                    tasks.append(self._fetch_logs)
 
-                await self.connect(
-                    response.node_version,
-                    response.core_version,
-                    tasks,
-                )
+                await self.connect(response.node_version, response.core_version, tasks)
             except Exception as e:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await self.disconnect()
                 raise e
 
         return response
@@ -288,7 +274,9 @@ class Node(PasarGuardNode):
                             )
                             await self.set_health(Health.BROKEN)
                     else:
-                        self.logger.warning(f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}")
+                        self.logger.warning(
+                            f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}"
+                        )
                         await asyncio.sleep(retry_delay)
                         continue
 
@@ -414,7 +402,10 @@ class Node(PasarGuardNode):
                 try:
                     async with self._lock.reader_lock:
                         if self._user_queue is None or self._notify_queue is None:
-                            break
+                            self.logger.warning(f"[{self.name}] User queues are None, waiting before retry...")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 1.5, max_retry_delay)
+                            continue
 
                         user_task = asyncio.create_task(self._user_queue.get())
                         notify_task = asyncio.create_task(self._notify_queue.get())
@@ -436,15 +427,15 @@ class Node(PasarGuardNode):
                     if notify_task in done:
                         notify_result = notify_task.result()
                         if notify_result is None:
-                            self.logger.info(f"[{self.name}] Received notification to stop user sync task")
-                            break
+                            self.logger.info(f"[{self.name}] Received notification to renew queues, continuing...")
+                            continue
                         continue
 
                     if user_task in done:
                         user = user_task.result()
                         if user is None:
-                            self.logger.info(f"[{self.name}] Received None user, stopping user sync task")
-                            break
+                            self.logger.info(f"[{self.name}] Received None user, continuing...")
+                            continue
 
                         self.logger.info(f"[{self.name}] Syncing user {user.email}")
                         success = await self._sync_user_with_retry(user, max_retries=3, timeout=10)

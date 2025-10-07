@@ -104,29 +104,15 @@ class Node(PasarGuardNode):
             if not info.started:
                 raise NodeAPIError(500, "Failed to start the node")
 
-            # Clear shutdown event before creating tasks
-            self._shutdown_event.clear()
-
-            tasks = []
             try:
-                health_task = asyncio.create_task(self._check_node_health(), name=f"health_check_{id(self)}")
-                sync_task = asyncio.create_task(self._sync_user(), name=f"sync_user_{id(self)}")
-                tasks.extend([health_task, sync_task])
+                tasks = [self._check_node_health, self._sync_user]
 
                 if ghather_logs:
-                    logs_task = asyncio.create_task(self._fetch_logs(), name=f"fetch_logs_{id(self)}")
-                    tasks.append(logs_task)
+                    tasks.append(self._fetch_logs)
 
-                await self.connect(
-                    info.node_version,
-                    info.core_version,
-                    tasks,
-                )
+                await self.connect(info.node_version, info.core_version, tasks)
             except Exception as e:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await self.disconnect()
                 raise e
 
             return info
@@ -260,7 +246,9 @@ class Node(PasarGuardNode):
                             )
                             await self.set_health(Health.BROKEN)
                     else:
-                        self.logger.warning(f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}")
+                        self.logger.warning(
+                            f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s: {e}"
+                        )
                         await asyncio.sleep(retry_delay)
                         continue
 
@@ -418,7 +406,7 @@ class Node(PasarGuardNode):
                                 if notify_task in done:
                                     notify_result = notify_task.result()
                                     if notify_result is None:
-                                        self.logger.info(f"[{self.name}] Received notification to stop user sync task")
+                                        self.logger.info(f"[{self.name}] Received notification to renew queues, breaking stream")
                                         stream_failed = True
                                         break
                                     continue
@@ -426,7 +414,7 @@ class Node(PasarGuardNode):
                                 if user_task in done:
                                     user = user_task.result()
                                     if user is None:
-                                        self.logger.info(f"[{self.name}] Received None user, stopping user sync task")
+                                        self.logger.info(f"[{self.name}] Received None user, breaking stream to renew queues")
                                         stream_failed = True
                                         break
 
@@ -441,7 +429,9 @@ class Node(PasarGuardNode):
                                         )
                                         await self.requeue_user_with_deduplication(user)
                                         try:
-                                            await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+                                            await asyncio.wait_for(
+                                                asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1
+                                            )
                                         except asyncio.TimeoutError:
                                             pass
                                         sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
@@ -457,12 +447,12 @@ class Node(PasarGuardNode):
                             except Exception as e:
                                 self.logger.error(f"[{self.name}] An error occurred in user sync task: {e}")
                                 try:
-                                    await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+                                    await asyncio.wait_for(
+                                        asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1
+                                    )
                                 except asyncio.TimeoutError:
                                     pass
                                 sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
-                        if stream_failed:
-                            break
 
                 except asyncio.CancelledError:
                     self.logger.info(f"[{self.name}] User sync stream cancelled")

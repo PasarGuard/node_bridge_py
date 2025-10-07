@@ -157,7 +157,6 @@ class Controller:
         self._notify_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10)
         self._logs_queue: Optional[RollingQueue] = RollingQueue(self.max_logs)
         self._tasks: list[asyncio.Task] = []
-        self._task_refs: weakref.WeakSet = weakref.WeakSet()
         self._node_version = ""
         self._core_version = ""
         self._extra = extra
@@ -233,17 +232,19 @@ class Controller:
         async with self._lock.reader_lock:
             return self._extra
 
-    async def connect(self, node_version: str, core_version: str, tasks: list[asyncio.Task] | None = None):
+    async def connect(self, node_version: str, core_version: str, tasks: list | None = None):
         if tasks is None:
             tasks = []
         async with self._lock.writer_lock:
+            self._shutdown_event.clear()
             await self._cleanup_tasks()
-            self._tasks = tasks
-            for task in tasks:
-                self._task_refs.add(task)
+            self._health = Health.HEALTHY
             self._node_version = node_version
             self._core_version = core_version
-            self._health = Health.HEALTHY
+
+            for t in tasks:
+                task = asyncio.create_task(t())
+                self._tasks.append(task)
 
     async def disconnect(self):
         await self.set_health(Health.NOT_CONNECTED)
