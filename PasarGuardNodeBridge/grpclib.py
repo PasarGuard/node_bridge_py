@@ -414,17 +414,29 @@ class Node(PasarGuardNode):
         user_task = asyncio.create_task(user_queue.get())
         notify_task = asyncio.create_task(notify_queue.get())
 
-        done, pending = await asyncio.wait([user_task, notify_task], return_when=asyncio.FIRST_COMPLETED, timeout=30)
+        try:
+            done, pending = await asyncio.wait(
+                [user_task, notify_task], return_when=asyncio.FIRST_COMPLETED, timeout=30
+            )
 
-        # Cancel pending tasks
-        for task in pending:
-            task.cancel()
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            return done, user_task, notify_task
+        except asyncio.CancelledError:
+            # If we're cancelled, make sure to cancel both tasks
+            user_task.cancel()
+            notify_task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
+                await asyncio.gather(user_task, notify_task, return_exceptions=True)
+            except Exception:
                 pass
-
-        return done, user_task, notify_task
+            raise
 
     async def _handle_user_sync_stream(self, stream, user, sync_retry_delay: float, max_retry_delay: float) -> float:
         """Sync a single user via gRPC stream and handle retry logic.
