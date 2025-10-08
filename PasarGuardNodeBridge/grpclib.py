@@ -193,15 +193,15 @@ class Node(PasarGuardNode):
 
     async def _sync_user_with_retry(
         self, stream: Stream[service.User, service.Empty], user: service.User, max_retries: int = 3, timeout: int = 10
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         """
         Attempt to sync a user via gRPC stream with retry logic for timeout errors.
-        Returns True if successful, False if all retries failed.
+        Returns (success, is_timeout_error) tuple.
         """
         for attempt in range(max_retries):
             try:
                 await asyncio.wait_for(stream.send_message(user), timeout=timeout)
-                return True
+                return True, False
             except asyncio.TimeoutError:
                 # Retry on timeout
                 if attempt < max_retries - 1:
@@ -215,7 +215,7 @@ class Node(PasarGuardNode):
                 self.logger.warning(
                     f"[{self.name}] Failed to sync user {user.email} after {max_retries} timeout attempts"
                 )
-                return False
+                return False, True
             except Exception as e:
                 # Other errors, don't retry
                 error_type = type(e).__name__
@@ -223,8 +223,8 @@ class Node(PasarGuardNode):
                     f"[{self.name}] Unexpected error syncing user {user.email} | " f"Error: {error_type} - {str(e)}",
                     exc_info=True,
                 )
-                return False
-        return False
+                return False, False
+        return False, True  # If we exhaust retries, it was timeout
 
     async def _check_node_health(self):
         """Health check task with proper cancellation handling"""
@@ -338,25 +338,31 @@ class Node(PasarGuardNode):
 
         return True
 
-    async def _open_and_process_log_stream(self) -> bool:
+    async def _open_and_process_log_stream(self) -> tuple[bool, bool]:
         """Open gRPC log stream and process it.
 
         Returns:
-            True if successful, False if failed
+            Tuple of (success, is_timeout_error)
         """
         try:
             self.logger.info(f"[{self.name}] Opening log stream")
             async with self._client.GetLogs.open(metadata=self._metadata) as stream:
                 await stream.send_message(service.Empty())
                 self.logger.info(f"[{self.name}] Log stream opened successfully")
-                return await self._receive_and_process_logs(stream)
+                success = await self._receive_and_process_logs(stream)
+                return success, False
         except asyncio.CancelledError:
             self.logger.info(f"[{self.name}] Log stream cancelled")
             raise
+        except asyncio.TimeoutError:
+            self.logger.warning(f"[{self.name}] Log stream timeout")
+            return False, True
         except Exception as e:
             error_type = type(e).__name__
+            # Check if it's a timeout-related error (gRPC deadline exceeded, etc.)
+            is_timeout = "timeout" in str(e).lower() or "deadline" in str(e).lower() or "timed out" in str(e).lower()
             self.logger.error(f"[{self.name}] Log stream failed | Error: {error_type} - {str(e)}", exc_info=True)
-            return False
+            return False, is_timeout
 
     async def _fetch_logs(self):
         """Log fetching task with proper cancellation handling"""
@@ -379,9 +385,13 @@ class Node(PasarGuardNode):
                 retry_delay = 10.0
 
                 # Try to open and process log stream
-                stream_success = await self._open_and_process_log_stream()
+                stream_success, is_timeout = await self._open_and_process_log_stream()
 
                 if not stream_success:
+                    # Only increment hard reset counter for non-timeout errors
+                    if not is_timeout:
+                        await self._increment_log_fetch_failure()
+
                     self.logger.warning(f"[{self.name}] Log stream failed, retrying in {log_retry_delay} seconds")
                     try:
                         await asyncio.wait_for(asyncio.sleep(log_retry_delay), timeout=log_retry_delay + 1)
@@ -389,6 +399,7 @@ class Node(PasarGuardNode):
                         pass
                     log_retry_delay = min(log_retry_delay * 2, max_retry_delay)
                 else:
+                    await self._reset_log_fetch_failure_count()
                     log_retry_delay = 1.0
 
         except asyncio.CancelledError:
@@ -445,12 +456,17 @@ class Node(PasarGuardNode):
             Updated sync_retry_delay
         """
         self.logger.info(f"[{self.name}] Syncing user {user.email}")
-        success = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
+        success, is_timeout = await self._sync_user_with_retry(stream, user, max_retries=3, timeout=15)
 
         if success:
             self.logger.info(f"[{self.name}] Successfully synced user {user.email}")
+            await self._reset_user_sync_failure_count()
             return 1.0
         else:
+            # Only increment hard reset counter for non-timeout errors
+            if not is_timeout:
+                await self._increment_user_sync_failure()
+
             self.logger.warning(f"[{self.name}] Failed to sync user {user.email}, requeueing")
             await self.requeue_user_with_deduplication(user)
             try:

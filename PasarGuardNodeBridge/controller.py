@@ -176,6 +176,13 @@ class Controller:
         self._core_version = ""
         self._extra = extra
 
+        # Hard reset mechanism for critical failures
+        self._hard_reset_event = asyncio.Event()
+        self._user_sync_failure_count = 0
+        self._log_fetch_failure_count = 0
+        self._hard_reset_threshold = 5
+        self._failure_count_lock = asyncio.Lock()  # Only for incrementing counters
+
         # Separate locks for different resources to reduce contention
         self._health_lock = asyncio.Lock()
         self._queue_lock = asyncio.Lock()
@@ -213,6 +220,45 @@ class Controller:
     async def get_health(self) -> Health:
         async with self._health_lock:
             return self._health
+
+    def requires_hard_reset(self) -> bool:
+        """Check if hard reset is required due to critical failures.
+
+        This is a synchronous, non-blocking check using Event.is_set().
+        """
+        return self._hard_reset_event.is_set()
+
+    async def _increment_user_sync_failure(self):
+        """Increment user sync failure counter and check if hard reset is needed."""
+        async with self._failure_count_lock:
+            self._user_sync_failure_count += 1
+            if self._user_sync_failure_count >= self._hard_reset_threshold:
+                if not self._hard_reset_event.is_set():
+                    self._hard_reset_event.set()
+                    self.logger.critical(
+                        f"[{self.name}] HARD RESET REQUIRED: User sync failed {self._user_sync_failure_count} times in a row"
+                    )
+
+    async def _reset_user_sync_failure_count(self):
+        """Reset user sync failure counter on successful sync."""
+        async with self._failure_count_lock:
+            self._user_sync_failure_count = 0
+
+    async def _increment_log_fetch_failure(self):
+        """Increment log fetch failure counter and check if hard reset is needed."""
+        async with self._failure_count_lock:
+            self._log_fetch_failure_count += 1
+            if self._log_fetch_failure_count >= self._hard_reset_threshold:
+                if not self._hard_reset_event.is_set():
+                    self._hard_reset_event.set()
+                    self.logger.critical(
+                        f"[{self.name}] HARD RESET REQUIRED: Log fetch failed {self._log_fetch_failure_count} times in a row"
+                    )
+
+    async def _reset_log_fetch_failure_count(self):
+        """Reset log fetch failure counter on successful fetch."""
+        async with self._failure_count_lock:
+            self._log_fetch_failure_count = 0
 
     async def update_user(self, user: User):
         async with self._queue_lock:
@@ -276,6 +322,12 @@ class Controller:
 
         # Clear shutdown event first (no lock needed)
         self._shutdown_event.clear()
+
+        # Reset hard reset event and failure counters
+        self._hard_reset_event.clear()
+        async with self._failure_count_lock:
+            self._user_sync_failure_count = 0
+            self._log_fetch_failure_count = 0
 
         # Cleanup tasks with task lock
         async with self._task_lock:
