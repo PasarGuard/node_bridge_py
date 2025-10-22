@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from asyncio import Queue
+from typing import AsyncIterator
 
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Controller
@@ -12,7 +14,6 @@ class PasarGuardNode(Controller, ABC):
         backend_type: service.BackendType,
         users: list[service.User],
         keep_alive: int,
-        ghather_logs: bool,
         exclude_inbounds: list[str],
         timeout: int,
     ) -> service.BaseInfoResponse | None:
@@ -57,9 +58,9 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def _fetch_logs(self):
+    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[Queue]:
         raise NotImplementedError
-
+    
     @abstractmethod
     async def _sync_user(self):
         raise NotImplementedError

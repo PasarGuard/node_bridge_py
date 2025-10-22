@@ -12,10 +12,10 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: PasarGuard
-Version: 0.0.62
+Version: 0.1.0
 """
 
-__version__ = "0.0.62"
+__version__ = "0.1.0"
 __author__ = "PasarGuard"
 
 
@@ -42,7 +42,6 @@ def create_node(
     server_ca: str,
     api_key: str,
     name: str = "default",
-    max_logs: int = 1000,
     extra: dict = {},
     logger: Optional[logging.Logger] = None,
 ) -> PasarGuardNode:
@@ -58,7 +57,6 @@ def create_node(
         port (int): Port number used to connect to the node.
         server_ca (str): The server's SSL certificate as a string (PEM format).
         api_key (str): API key used for authentication with the node.
-        max_logs (int, optional): Maximum number of logs to retain. Defaults to 1000.
         extra (dict, optional): Optional dictionary to pass custom metadata or configuration.
 
     Returns:
@@ -81,7 +79,6 @@ def create_node(
             api_key=api_key,
             name=name,
             extra=extra,
-            max_logs=max_logs,
             logger=logger,
         )
 
@@ -93,7 +90,6 @@ def create_node(
             api_key=api_key,
             name=name,
             extra=extra,
-            max_logs=max_logs,
             logger=logger,
         )
 

@@ -241,7 +241,7 @@ wheels = [
 
 [[package]]
 name = "pasarguard-node-bridge"
-version = "0.0.62"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "grpclib" },

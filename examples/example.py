@@ -22,7 +22,6 @@ async def main():
         port=port,
         server_ca=server_ca_content,
         api_key=api_key,
-        max_logs=100,
         extra={"id": 1},
     )
 
@@ -46,9 +45,34 @@ async def main():
     stats = await node.get_system_stats()
     print(stats)
 
-    logs = await node.get_logs()
+    # Stream logs on-demand using context manager with real-time error detection
+    print("\n--- Streaming logs (real-time error detection) ---")
+    try:
+        async with node.stream_logs(max_queue_size=100) as log_queue:
+            # Read logs in a loop
+            for _ in range(10):  # Try to get up to 10 log messages
+                try:
+                    item = await asyncio.wait_for(log_queue.get(), timeout=0.5)
 
-    print(await logs.get())
+                    # IMPORTANT: Check if we received an error instead of a log
+                    if isinstance(item, Bridge.NodeAPIError):
+                        # Error occurred during streaming - raise it immediately
+                        raise item
+
+                    # It's a normal log message
+                    print(f"LOG: {item}")
+
+                except asyncio.TimeoutError:
+                    print("No more logs received within timeout")
+                    break
+
+    except Bridge.NodeAPIError as e:
+        # Only print error if it's not an empty cleanup error
+        if e.code != 0 or e.detail:
+            print("\n!!! Log stream error detected !!!")
+            print(f"Error code: {e.code}")
+            print(f"Error detail: {e.detail}")
+            print("In production, would attempt to reconnect and resume streaming...")
 
     await node.stop()
 

@@ -8,34 +8,6 @@ from typing import Optional
 from PasarGuardNodeBridge.common.service_pb2 import User
 
 
-class RollingQueue(asyncio.Queue):
-    def __init__(self, maxsize=0):
-        super().__init__(maxsize)
-        self._closed = False
-
-    async def put(self, item):
-        if self._closed:
-            return
-        while self.maxsize > 0 and self.full():
-            try:
-                await asyncio.wait_for(self.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                break
-        try:
-            await super().put(item)
-        except asyncio.QueueFull:
-            pass
-
-    async def close(self):
-        """Close the queue and prevent further operations"""
-        self._closed = True
-        while not self.empty():
-            try:
-                self.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-
 class PriorityUserQueue(asyncio.PriorityQueue):
     """Priority queue that tracks pending user emails to avoid duplicate entries.
     Lower priority number = higher priority (0 is highest)
@@ -139,10 +111,8 @@ class Controller:
         api_key: str,
         name: str = "default",
         extra: dict | None = None,
-        max_logs: int = 1000,
         logger: logging.Logger | None = None,
     ):
-        self.max_logs = max_logs
         self.name = name
         if extra is None:
             extra = {}
@@ -170,7 +140,6 @@ class Controller:
         self._health = Health.NOT_CONNECTED
         self._user_queue: Optional[PriorityUserQueue] = PriorityUserQueue(maxsize=10000)
         self._notify_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10)
-        self._logs_queue: Optional[RollingQueue] = RollingQueue(self.max_logs)
         self._tasks: list[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
@@ -179,7 +148,6 @@ class Controller:
         # Hard reset mechanism for critical failures
         self._hard_reset_event = asyncio.Event()
         self._user_sync_failure_count = 0
-        self._log_fetch_failure_count = 0
         self._hard_reset_threshold = 5
         self._failure_count_lock = asyncio.Lock()  # Only for incrementing counters
 
@@ -244,22 +212,6 @@ class Controller:
         async with self._failure_count_lock:
             self._user_sync_failure_count = 0
 
-    async def _increment_log_fetch_failure(self):
-        """Increment log fetch failure counter and check if hard reset is needed."""
-        async with self._failure_count_lock:
-            self._log_fetch_failure_count += 1
-            if self._log_fetch_failure_count >= self._hard_reset_threshold:
-                if not self._hard_reset_event.is_set():
-                    self._hard_reset_event.set()
-                    self.logger.critical(
-                        f"[{self.name}] HARD RESET REQUIRED: Log fetch failed {self._log_fetch_failure_count} times in a row"
-                    )
-
-    async def _reset_log_fetch_failure_count(self):
-        """Reset log fetch failure counter on successful fetch."""
-        async with self._failure_count_lock:
-            self._log_fetch_failure_count = 0
-
     async def update_user(self, user: User):
         async with self._queue_lock:
             if self._user_queue:
@@ -294,16 +246,6 @@ class Controller:
                 await self._user_queue.close()
                 self._user_queue = PriorityUserQueue(10000)
 
-    async def get_logs(self) -> asyncio.Queue | None:
-        async with self._queue_lock:
-            return self._logs_queue
-
-    async def flush_logs_queue(self):
-        async with self._queue_lock:
-            if self._logs_queue:
-                await self._logs_queue.close()
-                self._logs_queue = RollingQueue(self.max_logs)
-
     async def node_version(self) -> str:
         async with self._version_lock:
             return self._node_version
@@ -327,7 +269,6 @@ class Controller:
         self._hard_reset_event.clear()
         async with self._failure_count_lock:
             self._user_sync_failure_count = 0
-            self._log_fetch_failure_count = 0
 
         # Cleanup tasks with task lock
         async with self._task_lock:
@@ -418,10 +359,6 @@ class Controller:
                     break
 
             self._notify_queue = asyncio.Queue(maxsize=10)
-
-        if self._logs_queue:
-            await self._logs_queue.close()
-            self._logs_queue = RollingQueue(self.max_logs)
 
     def is_shutting_down(self) -> bool:
         """Check if the node is shutting down"""

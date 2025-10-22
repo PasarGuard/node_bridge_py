@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 import httpx
 from google.protobuf.message import Message, DecodeError
@@ -18,10 +20,9 @@ class Node(PasarGuardNode):
         api_key: str,
         name: str = "default",
         extra: dict | None = None,
-        max_logs: int = 1000,
         logger: logging.Logger | None = None,
     ):
-        super().__init__(server_ca, api_key, name, extra, max_logs, logger)
+        super().__init__(server_ca, api_key, name, extra, logger)
 
         url = f"https://{address.strip('/')}:{port}/"
 
@@ -101,7 +102,6 @@ class Node(PasarGuardNode):
         backend_type: service.BackendType,
         users: list[service.User],
         keep_alive: int = 0,
-        ghather_logs: bool = True,
         exclude_inbounds: list[str] = [],
         timeout: int = 10,
     ):
@@ -132,10 +132,6 @@ class Node(PasarGuardNode):
 
             try:
                 tasks = [self._sync_user]
-
-                if ghather_logs:
-                    tasks.append(self._fetch_logs)
-
                 await self.connect(response.node_version, response.core_version, tasks)
             except Exception as e:
                 await self.disconnect()
@@ -345,99 +341,6 @@ class Node(PasarGuardNode):
             return min(retry_delay * 1.5, max_retry_delay)
         return retry_delay
 
-    async def _process_log_stream(self, response) -> bool:
-        """Process incoming log stream chunks.
-
-        Returns:
-            True if stream completed successfully, False if stream failed
-        """
-        buffer = b""
-
-        async for chunk in response.aiter_bytes():
-            if self.is_shutting_down():
-                return True
-
-            buffer += chunk
-
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                line = line.decode().strip()
-
-                if line:
-                    logs_queue = await self.get_logs()
-                    if logs_queue:
-                        await logs_queue.put(line)
-
-        return True
-
-    async def _open_and_process_log_stream(self) -> tuple[bool, bool]:
-        """Open log stream and process it.
-
-        Returns:
-            Tuple of (success, is_timeout_error)
-        """
-        try:
-            self.logger.info(f"[{self.name}] Opening log stream")
-            async with self._client.stream("GET", "/logs", timeout=60) as response:
-                self.logger.info(f"[{self.name}] Log stream opened successfully")
-                success = await self._process_log_stream(response)
-                return success, False
-        except asyncio.CancelledError:
-            self.logger.info(f"[{self.name}] Log stream cancelled")
-            raise
-        except asyncio.TimeoutError:
-            self.logger.warning(f"[{self.name}] Log stream timeout")
-            return False, True
-        except Exception as e:
-            error_type = type(e).__name__
-            # Check if it's a timeout-related error
-            is_timeout = "timeout" in str(e).lower() or "timed out" in str(e).lower()
-            self.logger.error(f"[{self.name}] Log stream failed | Error: {error_type} - {str(e)}", exc_info=True)
-            return False, is_timeout
-
-    async def _fetch_logs(self):
-        """Log fetching task with proper cancellation handling"""
-        retry_delay = 10.0
-        max_retry_delay = 60.0
-        log_retry_delay = 1.0
-        self.logger.info(f"[{self.name}] Log fetching task started")
-
-        try:
-            while not self.is_shutting_down():
-                if not await self._should_continue_task("Log fetching task"):
-                    break
-
-                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
-                health = await self.get_health()
-                if health == Health.BROKEN:
-                    continue
-
-                # Reset retry delay when healthy
-                retry_delay = 10.0
-
-                # Try to open and process log stream
-                stream_success, is_timeout = await self._open_and_process_log_stream()
-
-                if not stream_success:
-                    # Only increment hard reset counter for non-timeout errors
-                    if not is_timeout:
-                        await self._increment_log_fetch_failure()
-
-                    self.logger.warning(f"[{self.name}] Log stream failed, retrying in {log_retry_delay} seconds")
-                    try:
-                        await asyncio.wait_for(asyncio.sleep(log_retry_delay), timeout=log_retry_delay + 1)
-                    except asyncio.TimeoutError:
-                        pass
-                    log_retry_delay = min(log_retry_delay * 2, max_retry_delay)
-                else:
-                    await self._reset_log_fetch_failure_count()
-                    log_retry_delay = 1.0
-
-        except asyncio.CancelledError:
-            self.logger.info(f"[{self.name}] Log fetching task cancelled")
-        finally:
-            self.logger.info(f"[{self.name}] Log fetching task finished")
-
     async def _get_user_queues(self):
         """Get user and notify queue references with minimal lock scope.
 
@@ -584,3 +487,126 @@ class Node(PasarGuardNode):
             self.logger.info(f"[{self.name}] User sync task cancelled")
         finally:
             self.logger.info(f"[{self.name}] User sync task finished")
+
+    @asynccontextmanager
+    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[asyncio.Queue]:
+        """Context manager for streaming logs on-demand.
+
+        Yields a queue that receives log messages in real-time.
+        The stream is automatically closed when the context exits.
+
+        IMPORTANT: When an error occurs during log streaming, a NodeAPIError instance
+        is placed in the queue. You must check the type of each item received from
+        the queue and raise it if it's an error.
+
+        Args:
+            max_queue_size: Maximum size of the log queue
+
+        Yields:
+            asyncio.Queue containing log messages (str) or NodeAPIError on failure
+
+        Raises:
+            NodeAPIError: If the stream fails to open or encounters errors during operation
+
+        Example:
+            try:
+                async with node.stream_logs() as log_queue:
+                    while True:
+                        item = await log_queue.get()
+                        # Check if we received an error
+                        if isinstance(item, NodeAPIError):
+                            raise item
+                        # Process the log message
+                        print(f"LOG: {item}")
+            except NodeAPIError as e:
+                print(f"Log stream failed: {e.code} - {e.detail}")
+                # Reconnect or handle error
+        """
+        log_queue: asyncio.Queue[str | NodeAPIError] = asyncio.Queue(maxsize=max_queue_size)
+        stream_task = None
+
+        async def _receive_logs(response):
+            """Receive log messages from HTTP stream and put them in the queue."""
+            try:
+                buffer = b""
+                async for chunk in response.aiter_bytes():
+                    buffer += chunk
+
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        line = line.decode().strip()
+
+                        if line:
+                            try:
+                                await log_queue.put(line)
+                            except asyncio.QueueFull:
+                                # Drop oldest log if queue is full
+                                try:
+                                    log_queue.get_nowait()
+                                    await log_queue.put(line)
+                                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                                    pass
+            except asyncio.CancelledError:
+                self.logger.debug(f"[{self.name}] Log stream receive task cancelled")
+                raise
+            except (httpx.ReadError, httpx.RemoteProtocolError) as e:
+                # Stream was closed intentionally, this is expected during cleanup
+                self.logger.debug(f"[{self.name}] Log stream closed: {type(e).__name__}")
+            except Exception as e:
+                error_type = type(e).__name__
+                self.logger.error(f"[{self.name}] Error receiving logs | Error: {error_type} - {str(e)}")
+                # Convert exception to NodeAPIError and put directly into log queue
+                # so user gets immediate notification when reading
+                try:
+                    self._handle_error(e)
+                except NodeAPIError as api_error:
+                    try:
+                        # Put error into log queue for immediate detection
+                        log_queue.put_nowait(api_error)
+                    except asyncio.QueueFull:
+                        pass
+
+        response = None
+        try:
+            self.logger.info(f"[{self.name}] Opening on-demand log stream")
+            response = await self._client.stream("GET", "/logs", timeout=None).__aenter__()
+            self.logger.info(f"[{self.name}] On-demand log stream opened successfully")
+
+            # Start background task to receive logs
+            stream_task = asyncio.create_task(_receive_logs(response))
+
+            try:
+                # Yield the queue to the caller
+                yield log_queue
+
+                # After context exits, check if background task failed
+                if stream_task.done():
+                    exc = stream_task.exception()
+                    if exc and not isinstance(exc, asyncio.CancelledError):
+                        self._handle_error(exc)
+            finally:
+                # Cleanup: Close HTTP stream first to interrupt aiter_bytes()
+                if response is not None:
+                    try:
+                        await response.aclose()
+                    except Exception:
+                        pass
+
+                # Then cancel and wait for background task to finish
+                if stream_task and not stream_task.done():
+                    stream_task.cancel()
+                    try:
+                        await asyncio.wait_for(stream_task, timeout=1.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+
+        except NodeAPIError:
+            # Already a NodeAPIError, re-raise as-is
+            raise
+        except Exception as e:
+            error_type = type(e).__name__
+            self.logger.error(f"[{self.name}] Failed to open log stream | Error: {error_type} - {str(e)}")
+            # Convert to NodeAPIError
+            self._handle_error(e)
+        finally:
+            self.logger.info(f"[{self.name}] On-demand log stream closed")
