@@ -258,20 +258,20 @@ class Node(PasarGuardNode):
         max_retries = 3
         retry_delay = 2
         retries = 0
-        self.logger.info(f"[{self.name}] Health check task started")
+        self.logger.debug(f"[{self.name}] Health check task started")
 
         try:
             while not self.is_shutting_down():
                 last_health = await self.get_health()
 
                 if last_health in (Health.NOT_CONNECTED, Health.INVALID):
-                    self.logger.info(f"[{self.name}] Health check task stopped due to node state")
+                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state")
                     break
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
                     if last_health != Health.HEALTHY:
-                        self.logger.info(f"[{self.name}] Node health is HEALTHY")
+                        self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
                 except Exception as e:
@@ -298,7 +298,7 @@ class Node(PasarGuardNode):
                     continue
 
         except asyncio.CancelledError:
-            self.logger.info(f"[{self.name}] Health check task cancelled")
+            self.logger.debug(f"[{self.name}] Health check task cancelled")
         except Exception as e:
             error_type = type(e).__name__
             self.logger.error(
@@ -313,7 +313,7 @@ class Node(PasarGuardNode):
                     exc_info=True,
                 )
         finally:
-            self.logger.info(f"[{self.name}] Health check task finished")
+            self.logger.debug(f"[{self.name}] Health check task finished")
 
     async def _should_continue_task(self, task_name: str) -> bool:
         """Check if task should continue based on health status.
@@ -324,7 +324,7 @@ class Node(PasarGuardNode):
         health = await self.get_health()
 
         if health in (Health.NOT_CONNECTED, Health.INVALID):
-            self.logger.info(f"[{self.name}] {task_name} stopped due to node state")
+            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state")
             return False
         return True
 
@@ -389,11 +389,11 @@ class Node(PasarGuardNode):
         Returns:
             Updated sync_retry_delay
         """
-        self.logger.info(f"[{self.name}] Syncing user {user.email}")
+        self.logger.debug(f"[{self.name}] Syncing user {user.email}")
         success, is_timeout = await self._sync_user_with_retry(user, max_retries=3, timeout=10)
 
         if success:
-            self.logger.info(f"[{self.name}] Successfully synced user {user.email}")
+            self.logger.debug(f"[{self.name}] Successfully synced user {user.email}")
             await self._reset_user_sync_failure_count()
             return 1.0
         else:
@@ -433,14 +433,14 @@ class Node(PasarGuardNode):
         if notify_task in done:
             notify_result = notify_task.result()
             if notify_result is None:
-                self.logger.info(f"[{self.name}] Received notification to renew queues, continuing...")
+                self.logger.debug(f"[{self.name}] Received notification to renew queues, continuing...")
             return retry_delay, sync_retry_delay, True
 
         # Handle user sync
         if user_task in done:
             user = user_task.result()
             if user is None:
-                self.logger.info(f"[{self.name}] Received None user, continuing...")
+                self.logger.debug(f"[{self.name}] Received None user, continuing...")
                 return retry_delay, sync_retry_delay, True
 
             updated_sync_retry_delay = await self._handle_user_sync(user, sync_retry_delay, max_retry_delay)
@@ -453,7 +453,7 @@ class Node(PasarGuardNode):
         retry_delay = 10.0
         max_retry_delay = 60.0
         sync_retry_delay = 1.0
-        self.logger.info(f"[{self.name}] User sync task started")
+        self.logger.debug(f"[{self.name}] User sync task started")
 
         try:
             while not self.is_shutting_down():
@@ -470,7 +470,7 @@ class Node(PasarGuardNode):
                         retry_delay, sync_retry_delay, max_retry_delay
                     )
                 except asyncio.CancelledError:
-                    self.logger.info(f"[{self.name}] User sync task cancelled")
+                    self.logger.debug(f"[{self.name}] User sync task cancelled")
                     break
                 except Exception as e:
                     error_type = type(e).__name__
@@ -484,9 +484,9 @@ class Node(PasarGuardNode):
                     sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
-            self.logger.info(f"[{self.name}] User sync task cancelled")
+            self.logger.debug(f"[{self.name}] User sync task cancelled")
         finally:
-            self.logger.info(f"[{self.name}] User sync task finished")
+            self.logger.debug(f"[{self.name}] User sync task finished")
 
     @asynccontextmanager
     async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[asyncio.Queue]:
@@ -568,9 +568,9 @@ class Node(PasarGuardNode):
 
         response = None
         try:
-            self.logger.info(f"[{self.name}] Opening on-demand log stream")
+            self.logger.debug(f"[{self.name}] Opening on-demand log stream")
             response = await self._client.stream("GET", "/logs", timeout=None).__aenter__()
-            self.logger.info(f"[{self.name}] On-demand log stream opened successfully")
+            self.logger.debug(f"[{self.name}] On-demand log stream opened successfully")
 
             # Start background task to receive logs
             stream_task = asyncio.create_task(_receive_logs(response))
@@ -609,4 +609,4 @@ class Node(PasarGuardNode):
             # Convert to NodeAPIError
             self._handle_error(e)
         finally:
-            self.logger.info(f"[{self.name}] On-demand log stream closed")
+            self.logger.debug(f"[{self.name}] On-demand log stream closed")
