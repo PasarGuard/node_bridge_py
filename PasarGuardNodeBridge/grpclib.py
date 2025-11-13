@@ -61,6 +61,8 @@ class Node(PasarGuardNode):
         elif isinstance(error, GRPCError):
             http_status = grpc_to_http_status(error.status)
             message = error.message or "Unknown gRPC error"
+            if error.status == 4:
+                raise NodeAPIError(-1, f"Request timed out: {message}")
             raise NodeAPIError(http_status, message)
         elif isinstance(error, StreamTerminatedError):
             raise NodeAPIError(-1, f"Stream terminated: {str(error)}")
@@ -103,6 +105,13 @@ class Node(PasarGuardNode):
 
             if not info.started:
                 raise NodeAPIError(500, "Failed to start the node")
+
+            if not info.node_version or not info.node_version.strip():
+                await self.disconnect()
+                raise NodeAPIError(-3, "Node returned empty node_version")
+            if not info.core_version or not info.core_version.strip():
+                await self.disconnect()
+                raise NodeAPIError(-3, "Node returned empty core_version")
 
             try:
                 tasks = [self._sync_user]

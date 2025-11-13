@@ -262,6 +262,11 @@ class Controller:
         if tasks is None:
             tasks = []
 
+        if not node_version:
+            raise NodeAPIError(-3, f"Invalid node_version: version cannot be empty")
+        if not core_version:
+            raise NodeAPIError(-3, f"Invalid core_version: version cannot be empty")
+
         # Clear shutdown event first (no lock needed)
         self._shutdown_event.clear()
 
