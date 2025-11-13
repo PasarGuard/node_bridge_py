@@ -21,8 +21,10 @@ class Node(PasarGuardNode):
         name: str = "default",
         extra: dict | None = None,
         logger: logging.Logger | None = None,
+        default_timeout: int = 10,
+        internal_timeout: int = 15,
     ):
-        super().__init__(server_ca, api_key, name, extra, logger)
+        super().__init__(server_ca, api_key, name, extra, logger, default_timeout, internal_timeout)
 
         url = f"https://{address.strip('/')}:{port}/"
 
@@ -103,9 +105,10 @@ class Node(PasarGuardNode):
         users: list[service.User],
         keep_alive: int = 0,
         exclude_inbounds: list[str] = [],
-        timeout: int = 10,
+        timeout: int | None = None,
     ):
         """Start the node with proper task management"""
+        timeout = timeout or self._default_timeout
         health = await self.get_health()
         if health in (Health.BROKEN, Health.HEALTHY):
             await self.stop()
@@ -139,8 +142,9 @@ class Node(PasarGuardNode):
 
         return response
 
-    async def stop(self, timeout: int = 10) -> None:
+    async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
+        timeout = timeout or self._default_timeout
         if await self.get_health() is Health.NOT_CONNECTED:
             return
 
@@ -152,24 +156,28 @@ class Node(PasarGuardNode):
             except Exception:
                 pass
 
-    async def info(self, timeout: int = 10) -> service.BaseInfoResponse | None:
+    async def info(self, timeout: int | None = None) -> service.BaseInfoResponse | None:
+        timeout = timeout or self._default_timeout
         return await self._make_request(
             method="GET", endpoint="info", timeout=timeout, proto_response_class=service.BaseInfoResponse
         )
 
-    async def get_system_stats(self, timeout: int = 10) -> service.SystemStatsResponse | None:
+    async def get_system_stats(self, timeout: int | None = None) -> service.SystemStatsResponse | None:
+        timeout = timeout or self._default_timeout
         return await self._make_request(
             method="GET", endpoint="stats/system", timeout=timeout, proto_response_class=service.SystemStatsResponse
         )
 
-    async def get_backend_stats(self, timeout: int = 10) -> service.BackendStatsResponse | None:
+    async def get_backend_stats(self, timeout: int | None = None) -> service.BackendStatsResponse | None:
+        timeout = timeout or self._default_timeout
         return await self._make_request(
             method="GET", endpoint="stats/backend", timeout=timeout, proto_response_class=service.BackendStatsResponse
         )
 
     async def get_stats(
-        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int | None = None
     ) -> service.StatResponse | None:
+        timeout = timeout or self._default_timeout
         return await self._make_request(
             method="GET",
             endpoint="stats",
@@ -178,7 +186,8 @@ class Node(PasarGuardNode):
             proto_response_class=service.StatResponse,
         )
 
-    async def get_user_online_stats(self, email: str, timeout: int = 10) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int | None = None) -> service.OnlineStatResponse | None:
+        timeout = timeout or self._default_timeout
         return await self._make_request(
             method="GET",
             endpoint="stats/user/online",
@@ -187,7 +196,10 @@ class Node(PasarGuardNode):
             proto_response_class=service.OnlineStatResponse,
         )
 
-    async def get_user_online_ip_list(self, email: str, timeout: int = 10) -> service.StatsOnlineIpListResponse | None:
+    async def get_user_online_ip_list(
+        self, email: str, timeout: int | None = None
+    ) -> service.StatsOnlineIpListResponse | None:
+        timeout = timeout or self._default_timeout
         return await self._make_request(
             method="GET",
             endpoint="stats/user/online_ip",
@@ -197,8 +209,9 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_queue: bool = False, timeout: int = 10
+        self, users: list[service.User], flush_queue: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
         if flush_queue:
             await self.flush_user_queue()
 
@@ -211,11 +224,14 @@ class Node(PasarGuardNode):
                 proto_response_class=service.Empty,
             )
 
-    async def _sync_user_with_retry(self, user: service.User, max_retries: int = 3, timeout: int = 10) -> tuple[bool, bool]:
+    async def _sync_user_with_retry(
+        self, user: service.User, max_retries: int = 3, timeout: int | None = None
+    ) -> tuple[bool, bool]:
         """
         Attempt to sync a user with retry logic for timeout errors.
         Returns (success, is_timeout_error) tuple.
         """
+        timeout = timeout or self._internal_timeout
         for attempt in range(max_retries):
             try:
                 await self._make_request(
@@ -390,7 +406,7 @@ class Node(PasarGuardNode):
             Updated sync_retry_delay
         """
         self.logger.debug(f"[{self.name}] Syncing user {user.email}")
-        success, is_timeout = await self._sync_user_with_retry(user, max_retries=3, timeout=10)
+        success, is_timeout = await self._sync_user_with_retry(user, max_retries=3, timeout=self._internal_timeout)
 
         if success:
             self.logger.debug(f"[{self.name}] Successfully synced user {user.email}")

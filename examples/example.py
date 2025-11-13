@@ -16,6 +16,10 @@ with open(server_ca_file, "r") as f:
 
 
 async def main():
+    # Create node with custom timeout configuration
+    # - default_timeout: applies to all public API methods (start, stop, info, get_*, sync_*)
+    # - internal_timeout: applies to internal gRPC/HTTP operations
+    # These can be overridden per-call by passing timeout parameter to individual methods
     node = Bridge.create_node(
         connection=Bridge.NodeType.grpc,
         address=address,
@@ -23,27 +27,35 @@ async def main():
         server_ca=server_ca_content,
         api_key=api_key,
         extra={"id": 1},
+        name="example-node",
+        default_timeout=15,  # Custom default timeout for API calls (default: 10s)
+        internal_timeout=20,  # Custom timeout for internal operations (default: 15s)
     )
 
-    await node.start(config=config, backend_type=0, users=[], timeout=20)
+    # Start the node with custom timeout override (60s instead of instance default 15s)
+    await node.start(config=config, backend_type=0, users=[], timeout=60)
 
     user = Bridge.create_user(
         email="jeff", proxies=Bridge.create_proxy(vmess_id="0d59268a-9847-4218-ae09-65308eb52e08"), inbounds=[]
     )
 
     await node.update_user(user)
+
+    # Example: Call with instance default timeout (15s)
     try:
         await node.get_user_online_ip_list("does-not-exist@example.com")
     except Bridge.NodeAPIError as e:
-        print(e.code)
+        print(f"Expected error for non-existent user: {e.code}")
 
+    # Example: Call with instance default timeout (15s)
     stats = await node.get_stats(0)
-    print(stats)
+    print(f"Stats: {stats}")
 
     await asyncio.sleep(5)
 
-    stats = await node.get_system_stats()
-    print(stats)
+    # Example: Override timeout for this specific call (5s instead of instance default 15s)
+    stats = await node.get_system_stats(timeout=5)
+    print(f"System stats: {stats}")
 
     # Stream logs on-demand using context manager with real-time error detection
     print("\n--- Streaming logs (real-time error detection) ---")

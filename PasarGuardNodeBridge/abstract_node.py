@@ -15,42 +15,46 @@ class PasarGuardNode(Controller, ABC):
         users: list[service.User],
         keep_alive: int,
         exclude_inbounds: list[str],
-        timeout: int,
+        timeout: int | None,
     ) -> service.BaseInfoResponse | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def stop(self, timeout: int) -> None:
+    async def stop(self, timeout: int | None) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def info(self, timeout: int) -> service.BaseInfoResponse | None:
+    async def info(self, timeout: int | None) -> service.BaseInfoResponse | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_system_stats(self, timeout: int) -> service.SystemStatsResponse | None:
+    async def get_system_stats(self, timeout: int | None) -> service.SystemStatsResponse | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_backend_stats(self, timeout: int) -> service.BackendStatsResponse | None:
+    async def get_backend_stats(self, timeout: int | None) -> service.BackendStatsResponse | None:
         raise NotImplementedError
 
     @abstractmethod
     async def get_stats(
-        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int = 10
+        self, stat_type: service.StatType, reset: bool = True, name: str = "", timeout: int | None = None
     ) -> service.StatResponse | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_user_online_stats(self, email: str, timeout: int) -> service.OnlineStatResponse | None:
+    async def get_user_online_stats(self, email: str, timeout: int | None) -> service.OnlineStatResponse | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_user_online_ip_list(self, email: str, timeout: int) -> service.StatsOnlineIpListResponse | None:
+    async def get_user_online_ip_list(
+        self, email: str, timeout: int | None
+    ) -> service.StatsOnlineIpListResponse | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def sync_users(self, users: list[service.User], flush_queue: bool, timeout: int) -> service.Empty | None:
+    async def sync_users(
+        self, users: list[service.User], flush_queue: bool, timeout: int | None
+    ) -> service.Empty | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -60,7 +64,7 @@ class PasarGuardNode(Controller, ABC):
     @abstractmethod
     async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[Queue]:
         raise NotImplementedError
-    
+
     @abstractmethod
     async def _sync_user(self):
         raise NotImplementedError

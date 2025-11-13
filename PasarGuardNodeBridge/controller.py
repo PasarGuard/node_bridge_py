@@ -8,6 +8,11 @@ from typing import Optional
 from PasarGuardNodeBridge.common.service_pb2 import User
 
 
+# Default timeout configuration (module-level constants)
+DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
+DEFAULT_INTERNAL_TIMEOUT = 15  # Default timeout for internal gRPC/HTTP operations
+
+
 class PriorityUserQueue(asyncio.PriorityQueue):
     """Priority queue that tracks pending user emails to avoid duplicate entries.
     Lower priority number = higher priority (0 is highest)
@@ -112,6 +117,8 @@ class Controller:
         name: str = "default",
         extra: dict | None = None,
         logger: logging.Logger | None = None,
+        default_timeout: int = DEFAULT_API_TIMEOUT,
+        internal_timeout: int = DEFAULT_INTERNAL_TIMEOUT,
     ):
         self.name = name
         if extra is None:
@@ -123,6 +130,10 @@ class Controller:
             handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
             logger.addHandler(handler)
         self.logger = logger
+
+        # Timeout configuration
+        self._default_timeout = default_timeout
+        self._internal_timeout = internal_timeout
         try:
             self.api_key = UUID(api_key)
 

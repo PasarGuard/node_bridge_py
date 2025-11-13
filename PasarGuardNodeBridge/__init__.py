@@ -12,16 +12,14 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: PasarGuard
-Version: 0.1.1
+Version: 0.2.0
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __author__ = "PasarGuard"
 
 
 from enum import Enum
-import logging
-from typing import Optional
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.grpclib import Node as GrpcNode
@@ -41,9 +39,7 @@ def create_node(
     port: int,
     server_ca: str,
     api_key: str,
-    name: str = "default",
-    extra: dict = {},
-    logger: Optional[logging.Logger] = None,
+    **kwargs,
 ) -> PasarGuardNode:
     """
     Create and initialize a PasarGuard node instance using the specified connection type.
@@ -57,7 +53,12 @@ def create_node(
         port (int): Port number used to connect to the node.
         server_ca (str): The server's SSL certificate as a string (PEM format).
         api_key (str): API key used for authentication with the node.
-        extra (dict, optional): Optional dictionary to pass custom metadata or configuration.
+        **kwargs: Additional optional arguments:
+            - name (str): Node instance name for logging. Defaults to "default".
+            - extra (dict): Optional dictionary to pass custom metadata or configuration. Defaults to {}.
+            - logger (logging.Logger): Custom logger instance. If None, a default logger is created.
+            - default_timeout (int): Default timeout in seconds for public API methods. Defaults to 10.
+            - internal_timeout (int): Default timeout in seconds for internal operations. Defaults to 15.
 
     Returns:
         PasarGuardNode: An initialized node instance ready for API operations.
@@ -66,37 +67,53 @@ def create_node(
         ValueError: If the provided connection type is invalid.
         NodeAPIError: If the node connection or initialization fails.
 
+    Examples:
+        >>> # Basic usage with defaults
+        >>> node = create_node(
+        ...     connection=NodeType.grpc,
+        ...     address="172.27.158.135",
+        ...     port=2096,
+        ...     server_ca=server_ca_content,
+        ...     api_key=api_key,
+        ... )
+        >>>
+        >>> # With custom timeouts
+        >>> node = create_node(
+        ...     connection=NodeType.grpc,
+        ...     address="172.27.158.135",
+        ...     port=2096,
+        ...     server_ca=server_ca_content,
+        ...     api_key=api_key,
+        ...     default_timeout=30,
+        ...     internal_timeout=20,
+        ... )
+
     Note:
         - SSL certificate values should be passed as strings, not file paths.
         - Use `extra` to inject any environment-specific settings or context.
+        - Timeout values can be overridden per-call in individual API methods.
     """
 
     if connection is NodeType.grpc:
-        node = GrpcNode(
+        return GrpcNode(
             address=address,
             port=port,
             server_ca=server_ca,
             api_key=api_key,
-            name=name,
-            extra=extra,
-            logger=logger,
+            **kwargs,
         )
 
     elif connection is NodeType.rest:
-        node = RestNode(
+        return RestNode(
             address=address,
             port=port,
             server_ca=server_ca,
             api_key=api_key,
-            name=name,
-            extra=extra,
-            logger=logger,
+            **kwargs,
         )
 
     else:
         raise ValueError("invalid backend type")
-
-    return node
 
 
 __all__ = [
