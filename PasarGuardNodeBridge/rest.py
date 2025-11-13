@@ -63,8 +63,11 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-1, detail=f"Server closed connection: {error}")
         elif isinstance(error, httpx.HTTPStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
-        elif isinstance(error, httpx.ConnectError) or isinstance(error, httpx.ReadTimeout):
-            raise NodeAPIError(code=-1, detail=f"Connection error: {error}")
+        elif isinstance(error, httpx.ConnectError) or isinstance(error, httpx.ReadTimeout) or isinstance(error, httpx.ConnectTimeout) or isinstance(error, httpx.PoolTimeout):
+            # All timeout/connection errors get code -1 for automatic retry
+            raise NodeAPIError(code=-1, detail=f"Connection/timeout error: {error}")
+        elif isinstance(error, asyncio.TimeoutError):
+            raise NodeAPIError(code=-1, detail=f"Request timeout: {error}")
         else:
             raise NodeAPIError(0, str(error))
 
@@ -132,6 +135,14 @@ class Node(PasarGuardNode):
 
             if not response.started:
                 raise NodeAPIError(500, "Failed to start the node")
+
+            # Validate versions before connecting
+            if not response.node_version or not response.node_version.strip():
+                await self.disconnect()
+                raise NodeAPIError(-3, "Node returned empty node_version")
+            if not response.core_version or not response.core_version.strip():
+                await self.disconnect()
+                raise NodeAPIError(-3, "Node returned empty core_version")
 
             try:
                 tasks = [self._sync_user]
