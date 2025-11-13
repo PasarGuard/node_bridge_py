@@ -254,11 +254,24 @@ class Controller:
         async with self._version_lock:
             return self._core_version
 
+    async def get_versions(self) -> tuple[str, str]:
+        """Get both node and core versions atomically.
+
+        Returns:
+            tuple[str, str]: (node_version, core_version)
+        """
+        async with self._version_lock:
+            return self._node_version, self._core_version
+
     async def get_extra(self) -> dict:
         async with self._version_lock:
             return self._extra
 
     async def connect(self, node_version: str, core_version: str, tasks: list | None = None):
+        # Validate versions are not empty
+        if not node_version or not core_version:
+            raise NodeAPIError(-3, "Invalid version information from node")
+
         if tasks is None:
             tasks = []
 
@@ -274,14 +287,12 @@ class Controller:
         async with self._task_lock:
             await self._cleanup_tasks()
 
-        # Set health
+        # Set health and versions atomically to prevent race condition
         async with self._health_lock:
-            self._health = Health.HEALTHY
-
-        # Set versions
-        async with self._version_lock:
-            self._node_version = node_version
-            self._core_version = core_version
+            async with self._version_lock:
+                self._node_version = node_version
+                self._core_version = core_version
+                self._health = Health.HEALTHY
 
         # Create new tasks
         async with self._task_lock:
@@ -290,8 +301,6 @@ class Controller:
                 self._tasks.append(task)
 
     async def disconnect(self):
-        await self.set_health(Health.NOT_CONNECTED)
-
         # Set shutdown event (no lock needed)
         self._shutdown_event.set()
 
@@ -303,10 +312,14 @@ class Controller:
         async with self._queue_lock:
             await self._cleanup_queues()
 
-        # Clear versions
-        async with self._version_lock:
-            self._node_version = ""
-            self._core_version = ""
+        # Clear versions and set health atomically to prevent race condition
+        async with self._health_lock:
+            async with self._version_lock:
+                self._node_version = ""
+                self._core_version = ""
+            # Set health after versions are cleared
+            if self._health is not Health.INVALID:
+                self._health = Health.NOT_CONNECTED
 
     async def _cleanup_tasks(self):
         """Clean up all background tasks properly - must be called with task_lock held"""
