@@ -447,11 +447,15 @@ class Node(PasarGuardNode):
                 self.logger.error(
                     f"[{self.name}] Error in user sync stream | Error: {error_type} - {str(e)}", exc_info=True
                 )
+                # Increment failure counter for stream processing errors
+                await self._increment_user_sync_failure()
                 try:
                     await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                 except asyncio.TimeoutError:
                     pass
                 sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
+                # Return True to indicate stream failed
+                return True, sync_retry_delay
 
         return False, sync_retry_delay
 
@@ -465,13 +469,25 @@ class Node(PasarGuardNode):
             self.logger.debug(f"[{self.name}] Opening user sync stream")
             async with self._client.SyncUser.open(metadata=self._metadata) as stream:
                 self.logger.debug(f"[{self.name}] User sync stream opened successfully")
-                return await self._process_user_sync_stream(stream, 1.0, max_retry_delay)
+                # Stream opened successfully - reset failure counter (this also clears hard reset event)
+                await self._reset_user_sync_failure_count()
+                
+                # Process the stream
+                stream_failed, sync_retry_delay = await self._process_user_sync_stream(stream, 1.0, max_retry_delay)
+                
+                # If stream processed successfully (not failed), reset failure counter again
+                if not stream_failed:
+                    await self._reset_user_sync_failure_count()
+                
+                return stream_failed, sync_retry_delay
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync stream cancelled")
             raise
         except Exception as e:
             error_type = type(e).__name__
             self.logger.error(f"[{self.name}] User sync stream failed | Error: {error_type} - {str(e)}", exc_info=True)
+            # Increment failure counter for stream-level errors
+            await self._increment_user_sync_failure()
             return True, sync_retry_delay
 
     async def _sync_user(self):
@@ -508,6 +524,22 @@ class Node(PasarGuardNode):
                     except asyncio.TimeoutError:
                         pass
                     sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
+                else:
+                    # Stream succeeded - reset retry delay and ensure health is updated
+                    sync_retry_delay = 1.0
+                    # Update health to HEALTHY if it was BROKEN
+                    current_health = await self.get_health()
+                    if current_health == Health.BROKEN:
+                        # Verify node is actually healthy before updating
+                        try:
+                            await self.get_backend_stats()
+                            await self.set_health(Health.HEALTHY)
+                            self.logger.info(f"[{self.name}] Stream recovered, node health updated to HEALTHY")
+                        except Exception as e:
+                            error_type = type(e).__name__
+                            self.logger.debug(
+                                f"[{self.name}] Stream recovered but health check failed | Error: {error_type} - {str(e)}"
+                            )
 
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync task cancelled")
