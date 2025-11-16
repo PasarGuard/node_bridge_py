@@ -1,4 +1,4 @@
-# gozargah_node_bridge_py
+# node_bridge_py
 Library to connect and use https://github.com/PasarGuard/node
 
 # Usage
