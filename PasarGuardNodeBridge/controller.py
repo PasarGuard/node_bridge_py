@@ -219,9 +219,17 @@ class Controller:
                     )
 
     async def _reset_user_sync_failure_count(self):
-        """Reset user sync failure counter on successful sync."""
+        """Reset user sync failure counter on successful sync and clear hard reset event."""
         async with self._failure_count_lock:
+            old_count = self._user_sync_failure_count
             self._user_sync_failure_count = 0
+            # Clear hard reset event if it was set
+            if self._hard_reset_event.is_set():
+                self._hard_reset_event.clear()
+                if old_count > 0:
+                    self.logger.info(
+                        f"[{self.name}] User sync recovered after {old_count} failures, cleared hard reset event"
+                    )
 
     async def update_user(self, user: User):
         async with self._queue_lock:
