@@ -60,11 +60,11 @@ class Node(PasarGuardNode):
 
     def _handle_error(self, error: Exception):
         if isinstance(error, httpx.RemoteProtocolError):
-            raise NodeAPIError(code=-1, detail=f"Server closed connection: {error}")
+            raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
+        elif isinstance(error, httpx.TimeoutException):
+            raise NodeAPIError(code=-1, detail=f"Timeout error: {error}")
         elif isinstance(error, httpx.HTTPStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
-        elif isinstance(error, httpx.ConnectError) or isinstance(error, httpx.ReadTimeout):
-            raise NodeAPIError(code=-1, detail=f"Connection error: {error}")
         else:
             raise NodeAPIError(0, str(error))
 
@@ -110,9 +110,7 @@ class Node(PasarGuardNode):
         """Start the node with proper task management"""
         timeout = timeout or self._default_timeout
         health = await self.get_health()
-        if health in (Health.BROKEN, Health.HEALTHY):
-            await self.stop()
-        elif health is Health.INVALID:
+        if health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
         async with self._node_lock:
@@ -138,7 +136,7 @@ class Node(PasarGuardNode):
                 await self.connect(response.node_version, response.core_version, tasks)
             except Exception as e:
                 await self.disconnect()
-                raise e
+                self._handle_error(e)
 
         return response
 

@@ -311,6 +311,8 @@ class Controller:
             async with self._version_lock:
                 self._node_version = node_version
                 self._core_version = core_version
+                if self._health is Health.INVALID:
+                    raise NodeAPIError(code=-4, detail="Invalid node")
                 self._health = Health.HEALTHY
 
         # Create new tasks

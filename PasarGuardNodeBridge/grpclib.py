@@ -73,7 +73,7 @@ class Node(PasarGuardNode):
         """Handle a gRPC request and convert errors to NodeAPIError."""
         timeout = timeout or self._internal_timeout
         try:
-            return await asyncio.wait_for(method(request, metadata=self._metadata), timeout=timeout)
+            return await method(request, metadata=self._metadata, timeout=timeout)
         except Exception as e:
             await self._handle_error(e)
 
@@ -89,9 +89,7 @@ class Node(PasarGuardNode):
         """Start the node with proper task management"""
         timeout = timeout or self._default_timeout
         health = await self.get_health()
-        if health in (Health.BROKEN, Health.HEALTHY):
-            await self.stop()
-        elif health is Health.INVALID:
+        if health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
         req = service.Backend(
@@ -113,7 +111,7 @@ class Node(PasarGuardNode):
                 await self.connect(info.node_version, info.core_version, tasks)
             except Exception as e:
                 await self.disconnect()
-                raise e
+                self._handle_error(e)
 
             return info
 
@@ -467,18 +465,18 @@ class Node(PasarGuardNode):
         """
         try:
             self.logger.debug(f"[{self.name}] Opening user sync stream")
-            async with self._client.SyncUser.open(metadata=self._metadata) as stream:
+            async with self._client.SyncUser.open(metadata=self._metadata, timeout=self._default_timeout) as stream:
                 self.logger.debug(f"[{self.name}] User sync stream opened successfully")
                 # Stream opened successfully - reset failure counter (this also clears hard reset event)
                 await self._reset_user_sync_failure_count()
-                
+
                 # Process the stream
                 stream_failed, sync_retry_delay = await self._process_user_sync_stream(stream, 1.0, max_retry_delay)
-                
+
                 # If stream processed successfully (not failed), reset failure counter again
                 if not stream_failed:
                     await self._reset_user_sync_failure_count()
-                
+
                 return stream_failed, sync_retry_delay
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync stream cancelled")
