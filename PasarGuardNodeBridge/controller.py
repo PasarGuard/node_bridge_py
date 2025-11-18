@@ -174,7 +174,8 @@ class Controller:
         should_notify = False
 
         async with self._health_lock:
-            if self._health is Health.INVALID:
+            # Allow recovery from INVALID to HEALTHY only
+            if self._health is Health.INVALID and health != Health.HEALTHY:
                 return
             if health == Health.BROKEN and self._health != Health.BROKEN:
                 should_notify = self._notify_queue is not None

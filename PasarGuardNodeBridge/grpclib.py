@@ -265,13 +265,15 @@ class Node(PasarGuardNode):
             while not self.is_shutting_down():
                 last_health = await self.get_health()
 
-                if last_health in (Health.NOT_CONNECTED, Health.INVALID):
+                if last_health == Health.NOT_CONNECTED:
                     self.logger.debug(f"[{self.name}] Health check task stopped due to node state")
                     return
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    if last_health != Health.HEALTHY:
+                    # Only update to HEALTHY if we were BROKEN, INVALID, or NOT_CONNECTED
+                    # Don't change from HEALTHY to HEALTHY unnecessarily
+                    if last_health in (Health.BROKEN, Health.INVALID, Health.NOT_CONNECTED):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
@@ -324,7 +326,8 @@ class Node(PasarGuardNode):
         """
         health = await self.get_health()
 
-        if health in (Health.NOT_CONNECTED, Health.INVALID):
+        # Only stop for NOT_CONNECTED - allow INVALID nodes to try to recover
+        if health == Health.NOT_CONNECTED:
             self.logger.debug(f"[{self.name}] {task_name} stopped due to node state")
             return False
         return True
@@ -515,14 +518,17 @@ class Node(PasarGuardNode):
                     break
 
                 health = await self.get_health()
-                # If BROKEN, wait longer but still try to sync to allow recovery
-                if health == Health.BROKEN:
-                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
-                    # Use longer delay when BROKEN, but still attempt sync
+                was_broken = health == Health.BROKEN
+                was_invalid = health == Health.INVALID
+                # If BROKEN or INVALID, wait longer but still try to sync to allow recovery
+                if was_broken or was_invalid:
+                    if was_broken:
+                        retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN or INVALID, but still attempt sync
                     sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 # Reset retry delay when healthy
-                if health != Health.BROKEN:
+                if health not in (Health.BROKEN, Health.INVALID):
                     retry_delay = 10.0
 
                 # Try to open and process user sync stream
@@ -542,14 +548,15 @@ class Node(PasarGuardNode):
                 else:
                     # Stream succeeded - reset retry delay and ensure health is updated
                     sync_retry_delay = 1.0
-                    # Update health to HEALTHY if it was BROKEN
+                    # Update health to HEALTHY if it was BROKEN or INVALID
                     current_health = await self.get_health()
-                    if current_health == Health.BROKEN:
+                    if current_health in (Health.BROKEN, Health.INVALID):
                         # Verify node is actually healthy before updating
                         try:
                             await self.get_backend_stats()
                             await self.set_health(Health.HEALTHY)
-                            self.logger.info(f"[{self.name}] Stream recovered, node health updated to HEALTHY")
+                            health_status = "BROKEN" if was_broken else "INVALID"
+                            self.logger.info(f"[{self.name}] Stream recovered from {health_status}, node health updated to HEALTHY")
                             retry_delay = 10.0  # Reset retry delay
                         except Exception as e:
                             error_type = type(e).__name__

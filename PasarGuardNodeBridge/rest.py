@@ -288,15 +288,15 @@ class Node(PasarGuardNode):
             while not self.is_shutting_down():
                 last_health = await self.get_health()
 
-                if last_health in (Health.NOT_CONNECTED, Health.INVALID):
+                if last_health == Health.NOT_CONNECTED:
                     self.logger.debug(f"[{self.name}] Health check task stopped due to node state")
                     break
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    # Only update to HEALTHY if we were BROKEN or NOT_CONNECTED
+                    # Only update to HEALTHY if we were BROKEN, INVALID, or NOT_CONNECTED
                     # Don't change from HEALTHY to HEALTHY unnecessarily
-                    if last_health in (Health.BROKEN, Health.NOT_CONNECTED):
+                    if last_health in (Health.BROKEN, Health.INVALID, Health.NOT_CONNECTED):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
@@ -349,7 +349,8 @@ class Node(PasarGuardNode):
         """
         health = await self.get_health()
 
-        if health in (Health.NOT_CONNECTED, Health.INVALID):
+        # Only stop for NOT_CONNECTED - allow INVALID nodes to try to recover
+        if health == Health.NOT_CONNECTED:
             self.logger.debug(f"[{self.name}] {task_name} stopped due to node state")
             return False
         return True
@@ -488,10 +489,12 @@ class Node(PasarGuardNode):
 
                 health = await self.get_health()
                 was_broken = health == Health.BROKEN
-                # If BROKEN, wait longer but still try to sync to allow recovery
-                if was_broken:
-                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
-                    # Use longer delay when BROKEN, but still attempt sync
+                was_invalid = health == Health.INVALID
+                # If BROKEN or INVALID, wait longer but still try to sync to allow recovery
+                if was_broken or was_invalid:
+                    if was_broken:
+                        retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN or INVALID, but still attempt sync
                     sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 try:
@@ -499,21 +502,22 @@ class Node(PasarGuardNode):
                         retry_delay, sync_retry_delay, max_retry_delay
                     )
                     
-                    # If sync succeeded and we were BROKEN, verify node is healthy and update health
-                    if was_broken:
+                    # If sync succeeded and we were BROKEN or INVALID, verify node is healthy and update health
+                    if was_broken or was_invalid:
                         current_health = await self.get_health()
-                        if current_health == Health.BROKEN:
+                        if current_health in (Health.BROKEN, Health.INVALID):
                             try:
                                 await self.get_backend_stats()
                                 await self.set_health(Health.HEALTHY)
-                                self.logger.info(f"[{self.name}] Sync succeeded while BROKEN, node health updated to HEALTHY")
+                                health_status = "BROKEN" if was_broken else "INVALID"
+                                self.logger.info(f"[{self.name}] Sync succeeded while {health_status}, node health updated to HEALTHY")
                                 retry_delay = 10.0  # Reset retry delay
                                 sync_retry_delay = 1.0  # Reset sync retry delay
                             except Exception as e:
-                                # Node still not responding, keep as BROKEN
+                                # Node still not responding, keep current health status
                                 error_type = type(e).__name__
                                 self.logger.debug(
-                                    f"[{self.name}] Sync succeeded but health check failed, keeping BROKEN | "
+                                    f"[{self.name}] Sync succeeded but health check failed, keeping {current_health.name} | "
                                     f"Error: {error_type} - {str(e)}"
                                 )
                 except asyncio.CancelledError:
