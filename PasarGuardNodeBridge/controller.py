@@ -244,6 +244,46 @@ class Controller:
             for user in users:
                 await self._user_queue.put(user)
 
+    async def _try_recover_health_after_sync(
+        self, was_broken: bool, was_invalid: bool
+    ) -> tuple[float | None, float | None]:
+        """
+        Attempt to recover node health from BROKEN or INVALID to HEALTHY after successful sync.
+        
+        Args:
+            was_broken: Whether the node was BROKEN before sync
+            was_invalid: Whether the node was INVALID before sync
+            
+        Returns:
+            Tuple of (retry_delay, sync_retry_delay) - (10.0, 1.0) if recovery succeeded,
+            (None, None) if no recovery needed or recovery failed
+        """
+        if not (was_broken or was_invalid):
+            return None, None  # No recovery needed
+        
+        current_health = await self.get_health()
+        if current_health not in (Health.BROKEN, Health.INVALID):
+            return None, None  # Already recovered
+        
+        try:
+            # Verify node is actually healthy before updating
+            await self.get_backend_stats()
+            await self.set_health(Health.HEALTHY)
+            health_status = "BROKEN" if was_broken else "INVALID"
+            self.logger.info(
+                f"[{self.name}] Sync succeeded while {health_status}, node health updated to HEALTHY"
+            )
+            # Return reset delays
+            return 10.0, 1.0
+        except Exception as e:
+            # Node still not responding, keep current health status
+            error_type = type(e).__name__
+            self.logger.debug(
+                f"[{self.name}] Sync succeeded but health check failed, keeping {current_health.name} | "
+                f"Error: {error_type} - {str(e)}"
+            )
+            return None, None  # Keep current delays
+
     async def requeue_user_with_deduplication(self, user: User):
         """
         Requeue a user only if there's no existing version in the queue.

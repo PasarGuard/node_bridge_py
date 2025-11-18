@@ -548,21 +548,10 @@ class Node(PasarGuardNode):
                 else:
                     # Stream succeeded - reset retry delay and ensure health is updated
                     sync_retry_delay = 1.0
-                    # Update health to HEALTHY if it was BROKEN or INVALID
-                    current_health = await self.get_health()
-                    if current_health in (Health.BROKEN, Health.INVALID):
-                        # Verify node is actually healthy before updating
-                        try:
-                            await self.get_backend_stats()
-                            await self.set_health(Health.HEALTHY)
-                            health_status = "BROKEN" if was_broken else "INVALID"
-                            self.logger.info(f"[{self.name}] Stream recovered from {health_status}, node health updated to HEALTHY")
-                            retry_delay = 10.0  # Reset retry delay
-                        except Exception as e:
-                            error_type = type(e).__name__
-                            self.logger.debug(
-                                f"[{self.name}] Stream recovered but health check failed | Error: {error_type} - {str(e)}"
-                            )
+                    # Try to recover health if it was BROKEN or INVALID
+                    recovery_delays = await self._try_recover_health_after_sync(was_broken, was_invalid)
+                    if recovery_delays[0] is not None:
+                        retry_delay, _ = recovery_delays
 
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync task cancelled")

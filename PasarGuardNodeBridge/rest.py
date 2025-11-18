@@ -502,24 +502,10 @@ class Node(PasarGuardNode):
                         retry_delay, sync_retry_delay, max_retry_delay
                     )
                     
-                    # If sync succeeded and we were BROKEN or INVALID, verify node is healthy and update health
-                    if was_broken or was_invalid:
-                        current_health = await self.get_health()
-                        if current_health in (Health.BROKEN, Health.INVALID):
-                            try:
-                                await self.get_backend_stats()
-                                await self.set_health(Health.HEALTHY)
-                                health_status = "BROKEN" if was_broken else "INVALID"
-                                self.logger.info(f"[{self.name}] Sync succeeded while {health_status}, node health updated to HEALTHY")
-                                retry_delay = 10.0  # Reset retry delay
-                                sync_retry_delay = 1.0  # Reset sync retry delay
-                            except Exception as e:
-                                # Node still not responding, keep current health status
-                                error_type = type(e).__name__
-                                self.logger.debug(
-                                    f"[{self.name}] Sync succeeded but health check failed, keeping {current_health.name} | "
-                                    f"Error: {error_type} - {str(e)}"
-                                )
+                    # If sync succeeded and we were BROKEN or INVALID, try to recover health
+                    recovery_delays = await self._try_recover_health_after_sync(was_broken, was_invalid)
+                    if recovery_delays[0] is not None:
+                        retry_delay, sync_retry_delay = recovery_delays
                 except asyncio.CancelledError:
                     self.logger.debug(f"[{self.name}] User sync task cancelled")
                     break
