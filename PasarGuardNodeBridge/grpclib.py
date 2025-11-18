@@ -56,7 +56,7 @@ class Node(PasarGuardNode):
     def __del__(self):
         self._close_chan()
 
-    async def _handle_error(self, error: Exception):
+    def _handle_error(self, error: Exception):
         """Convert gRPC errors to NodeAPIError with HTTP status codes."""
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(-1, "Request timed out")
@@ -75,7 +75,7 @@ class Node(PasarGuardNode):
         try:
             return await method(request, metadata=self._metadata, timeout=timeout)
         except Exception as e:
-            await self._handle_error(e)
+            self._handle_error(e)
 
     async def start(
         self,
@@ -622,7 +622,7 @@ class Node(PasarGuardNode):
                 # Convert exception to NodeAPIError and put directly into log queue
                 # so user gets immediate notification when reading
                 try:
-                    await self._handle_error(e)
+                    self._handle_error(e)
                 except NodeAPIError as api_error:
                     try:
                         # Put error into log queue for immediate detection
@@ -647,7 +647,7 @@ class Node(PasarGuardNode):
                     if stream_task.done():
                         exc = stream_task.exception()
                         if exc and not isinstance(exc, asyncio.CancelledError):
-                            await self._handle_error(exc)
+                            self._handle_error(exc)
                 finally:
                     # Cleanup: cancel the gRPC stream to unblock recv_message()
                     try:
@@ -670,6 +670,6 @@ class Node(PasarGuardNode):
             error_type = type(e).__name__
             self.logger.error(f"[{self.name}] Failed to open log stream | Error: {error_type} - {str(e)}")
             # Convert to NodeAPIError
-            await self._handle_error(e)
+            self._handle_error(e)
         finally:
             self.logger.debug(f"[{self.name}] On-demand log stream closed")
