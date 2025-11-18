@@ -294,7 +294,9 @@ class Node(PasarGuardNode):
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    if last_health != Health.HEALTHY:
+                    # Only update to HEALTHY if we were BROKEN or NOT_CONNECTED
+                    # Don't change from HEALTHY to HEALTHY unnecessarily
+                    if last_health in (Health.BROKEN, Health.NOT_CONNECTED):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
@@ -484,15 +486,36 @@ class Node(PasarGuardNode):
                 if not await self._should_continue_task("User sync task"):
                     break
 
-                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
                 health = await self.get_health()
-                if health == Health.BROKEN:
-                    continue
+                was_broken = health == Health.BROKEN
+                # If BROKEN, wait longer but still try to sync to allow recovery
+                if was_broken:
+                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN, but still attempt sync
+                    sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 try:
                     retry_delay, sync_retry_delay, _ = await self._process_sync_iteration(
                         retry_delay, sync_retry_delay, max_retry_delay
                     )
+                    
+                    # If sync succeeded and we were BROKEN, verify node is healthy and update health
+                    if was_broken:
+                        current_health = await self.get_health()
+                        if current_health == Health.BROKEN:
+                            try:
+                                await self.get_backend_stats()
+                                await self.set_health(Health.HEALTHY)
+                                self.logger.info(f"[{self.name}] Sync succeeded while BROKEN, node health updated to HEALTHY")
+                                retry_delay = 10.0  # Reset retry delay
+                                sync_retry_delay = 1.0  # Reset sync retry delay
+                            except Exception as e:
+                                # Node still not responding, keep as BROKEN
+                                error_type = type(e).__name__
+                                self.logger.debug(
+                                    f"[{self.name}] Sync succeeded but health check failed, keeping BROKEN | "
+                                    f"Error: {error_type} - {str(e)}"
+                                )
                 except asyncio.CancelledError:
                     self.logger.debug(f"[{self.name}] User sync task cancelled")
                     break

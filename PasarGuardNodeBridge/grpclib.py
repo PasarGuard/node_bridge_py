@@ -514,13 +514,16 @@ class Node(PasarGuardNode):
                 if not await self._should_continue_task("User sync task"):
                     break
 
-                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
                 health = await self.get_health()
+                # If BROKEN, wait longer but still try to sync to allow recovery
                 if health == Health.BROKEN:
-                    continue
+                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN, but still attempt sync
+                    sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 # Reset retry delay when healthy
-                retry_delay = 10.0
+                if health != Health.BROKEN:
+                    retry_delay = 10.0
 
                 # Try to open and process user sync stream
                 stream_failed, sync_retry_delay = await self._open_and_process_user_sync_stream(
@@ -547,6 +550,7 @@ class Node(PasarGuardNode):
                             await self.get_backend_stats()
                             await self.set_health(Health.HEALTHY)
                             self.logger.info(f"[{self.name}] Stream recovered, node health updated to HEALTHY")
+                            retry_delay = 10.0  # Reset retry delay
                         except Exception as e:
                             error_type = type(e).__name__
                             self.logger.debug(
