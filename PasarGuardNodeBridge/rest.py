@@ -232,13 +232,14 @@ class Node(PasarGuardNode):
         timeout = timeout or self._internal_timeout
         for attempt in range(max_retries):
             try:
-                await self._make_request(
-                    method="PUT",
-                    endpoint="user/sync",
-                    timeout=timeout,
-                    proto_message=user,
-                    proto_response_class=service.Empty,
-                )
+                async with self._node_lock:
+                    await self._make_request(
+                        method="PUT",
+                        endpoint="user/sync",
+                        timeout=timeout,
+                        proto_message=user,
+                        proto_response_class=service.Empty,
+                    )
                 return True, False
             except NodeAPIError as e:
                 # Retry only on timeout (code -1)
@@ -452,9 +453,13 @@ class Node(PasarGuardNode):
 
         # Handle user sync
         if user_task in done:
-            user = user_task.result()
+            queued_user = user_task.result()
+            user, version = self._unwrap_user_queue_item(queued_user)
             if user is None:
                 self.logger.debug(f"[{self.name}] Received None user, continuing...")
+                return retry_delay, sync_retry_delay, True
+            if version != self._queue_version:
+                self.logger.debug(f"[{self.name}] Skipping stale user {user.email} after queue flush")
                 return retry_delay, sync_retry_delay, True
 
             updated_sync_retry_delay = await self._handle_user_sync(user, sync_retry_delay, max_retry_delay)

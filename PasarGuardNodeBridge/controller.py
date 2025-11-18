@@ -1,7 +1,8 @@
-import ssl
 import asyncio
 import logging
+import ssl
 from enum import IntEnum
+from dataclasses import dataclass
 from uuid import UUID
 from typing import Optional
 
@@ -109,6 +110,18 @@ class Health(IntEnum):
     INVALID = 3
 
 
+@dataclass
+class QueuedUser:
+    """Wrapper to keep queue state with each user."""
+
+    user: User
+    version: int
+
+    @property
+    def email(self) -> str:
+        return self.user.email
+
+
 class Controller:
     def __init__(
         self,
@@ -151,6 +164,7 @@ class Controller:
         self._health = Health.NOT_CONNECTED
         self._user_queue: Optional[PriorityUserQueue] = PriorityUserQueue(maxsize=10000)
         self._notify_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10)
+        self._queue_version: int = 0
         self._tasks: list[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
@@ -234,14 +248,14 @@ class Controller:
     async def update_user(self, user: User):
         async with self._queue_lock:
             if self._user_queue:
-                await self._user_queue.put(user)
+                await self._user_queue.put(QueuedUser(user=user, version=self._queue_version))
 
     async def update_users(self, users: list[User]):
         async with self._queue_lock:
             if not self._user_queue or not users:
                 return
             for user in users:
-                await self._user_queue.put(user)
+                await self._user_queue.put(QueuedUser(user=user, version=self._queue_version))
 
     async def requeue_user_with_deduplication(self, user: User):
         """
@@ -255,7 +269,7 @@ class Controller:
             # Only requeue if user is not already in queue
             if not self._user_queue.has_email(user.email):
                 try:
-                    await self._user_queue.put(user)
+                    await self._user_queue.put(QueuedUser(user=user, version=self._queue_version))
                 except asyncio.QueueFull:
                     pass
 
@@ -264,6 +278,7 @@ class Controller:
             if self._user_queue:
                 await self._user_queue.close()
                 self._user_queue = PriorityUserQueue(10000)
+                self._queue_version += 1
 
     async def node_version(self) -> str:
         async with self._version_lock:
@@ -379,6 +394,7 @@ class Controller:
                     break
 
             self._user_queue = PriorityUserQueue(maxsize=10000)
+            self._queue_version += 1
 
         if self._notify_queue:
             try:
@@ -393,6 +409,15 @@ class Controller:
                     break
 
             self._notify_queue = asyncio.Queue(maxsize=10)
+
+    @staticmethod
+    def _unwrap_user_queue_item(item) -> tuple[User | None, int]:
+        """Extract user and its queue version from queued items."""
+        if item is None:
+            return None, -1
+        if isinstance(item, QueuedUser):
+            return item.user, item.version
+        return item, 0
 
     def is_shutting_down(self) -> bool:
         """Check if the node is shutting down"""

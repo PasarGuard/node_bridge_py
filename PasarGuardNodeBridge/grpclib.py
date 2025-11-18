@@ -213,7 +213,8 @@ class Node(PasarGuardNode):
         timeout = timeout or self._internal_timeout
         for attempt in range(max_retries):
             try:
-                await asyncio.wait_for(stream.send_message(user), timeout=timeout)
+                async with self._node_lock:
+                    await asyncio.wait_for(stream.send_message(user), timeout=timeout)
                 return True, False
             except asyncio.TimeoutError:
                 # Retry on timeout
@@ -428,10 +429,14 @@ class Node(PasarGuardNode):
 
                 # Handle user sync
                 if user_task in done:
-                    user = user_task.result()
+                    queued_user = user_task.result()
+                    user, version = self._unwrap_user_queue_item(queued_user)
                     if user is None:
                         self.logger.debug(f"[{self.name}] Received None user, breaking stream to renew queues")
                         return True, sync_retry_delay
+                    if version != self._queue_version:
+                        self.logger.debug(f"[{self.name}] Skipping stale user {user.email} after queue flush")
+                        continue
 
                     sync_retry_delay = await self._handle_user_sync_stream(
                         stream, user, sync_retry_delay, max_retry_delay
