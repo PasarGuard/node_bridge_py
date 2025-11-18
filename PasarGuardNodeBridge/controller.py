@@ -174,8 +174,8 @@ class Controller:
         should_notify = False
 
         async with self._health_lock:
-            # Allow recovery from INVALID to HEALTHY only
-            if self._health is Health.INVALID and health != Health.HEALTHY:
+            # INVALID is permanent - once set, it cannot be changed (instance is being deleted)
+            if self._health is Health.INVALID:
                 return
             if health == Health.BROKEN and self._health != Health.BROKEN:
                 should_notify = self._notify_queue is not None

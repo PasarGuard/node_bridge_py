@@ -265,15 +265,14 @@ class Node(PasarGuardNode):
             while not self.is_shutting_down():
                 last_health = await self.get_health()
 
-                if last_health == Health.NOT_CONNECTED:
-                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state")
+                if last_health in (Health.NOT_CONNECTED, Health.INVALID):
+                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state: {last_health.name}")
                     return
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    # Only update to HEALTHY if we were BROKEN, INVALID, or NOT_CONNECTED
-                    # Don't change from HEALTHY to HEALTHY unnecessarily
-                    if last_health in (Health.BROKEN, Health.INVALID, Health.NOT_CONNECTED):
+                    # Only update to HEALTHY if we were BROKEN or NOT_CONNECTED
+                    if last_health in (Health.BROKEN, Health.NOT_CONNECTED):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
@@ -326,9 +325,9 @@ class Node(PasarGuardNode):
         """
         health = await self.get_health()
 
-        # Only stop for NOT_CONNECTED - allow INVALID nodes to try to recover
-        if health == Health.NOT_CONNECTED:
-            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state")
+        # Stop for NOT_CONNECTED and INVALID (INVALID means instance is being deleted)
+        if health in (Health.NOT_CONNECTED, Health.INVALID):
+            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state: {health.name}")
             return False
         return True
 
@@ -519,16 +518,14 @@ class Node(PasarGuardNode):
 
                 health = await self.get_health()
                 was_broken = health == Health.BROKEN
-                was_invalid = health == Health.INVALID
-                # If BROKEN or INVALID, wait longer but still try to sync to allow recovery
-                if was_broken or was_invalid:
-                    if was_broken:
-                        retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
-                    # Use longer delay when BROKEN or INVALID, but still attempt sync
+                # If BROKEN, wait longer but still try to sync to allow recovery
+                if was_broken:
+                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN, but still attempt sync
                     sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 # Reset retry delay when healthy
-                if health not in (Health.BROKEN, Health.INVALID):
+                if health != Health.BROKEN:
                     retry_delay = 10.0
 
                 # Try to open and process user sync stream
@@ -548,8 +545,9 @@ class Node(PasarGuardNode):
                 else:
                     # Stream succeeded - reset retry delay and ensure health is updated
                     sync_retry_delay = 1.0
-                    # Try to recover health if it was BROKEN or INVALID
-                    recovery_delays = await self._try_recover_health_after_sync(was_broken, was_invalid)
+                    # Try to recover health if it was BROKEN
+                    # INVALID nodes should not recover (instance is being deleted)
+                    recovery_delays = await self._try_recover_health_after_sync(was_broken, False)
                     if recovery_delays[0] is not None:
                         retry_delay, _ = recovery_delays
 
