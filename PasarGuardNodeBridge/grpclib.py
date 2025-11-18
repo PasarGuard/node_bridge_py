@@ -209,12 +209,26 @@ class Node(PasarGuardNode):
         """
         Attempt to sync a user via gRPC stream with retry logic for timeout errors.
         Returns (success, is_timeout_error) tuple.
+        
+        Raises StreamTerminatedError or GRPCError if stream is closed/invalid.
+        These should cause the stream to be reopened.
         """
         timeout = timeout or self._internal_timeout
         for attempt in range(max_retries):
             try:
+                # Check if stream is still valid before attempting to send
+                # If stream is closed, send_message will raise StreamTerminatedError immediately
                 await asyncio.wait_for(stream.send_message(user), timeout=timeout)
                 return True, False
+            except (StreamTerminatedError, GRPCError) as e:
+                # Stream errors - these indicate the stream is closed/invalid
+                # Re-raise to signal that stream needs to be reopened
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"[{self.name}] Stream error syncing user {user.email} | "
+                    f"Error: {error_type} - {str(e)}"
+                )
+                raise  # Re-raise to cause stream processing to fail and stream to be reopened
             except asyncio.TimeoutError:
                 # Retry on timeout
                 if attempt < max_retries - 1:

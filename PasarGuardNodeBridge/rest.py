@@ -61,7 +61,14 @@ class Node(PasarGuardNode):
     def _handle_error(self, error: Exception):
         if isinstance(error, httpx.RemoteProtocolError):
             raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
+        elif isinstance(error, httpx.ConnectError):
+            # Connection errors (connection refused, DNS errors, etc.) are NOT timeouts
+            raise NodeAPIError(code=-2, detail=f"Connection error: {error}")
+        elif isinstance(error, httpx.NetworkError):
+            # Other network errors (not connection errors or timeouts) are NOT timeouts
+            raise NodeAPIError(code=-2, detail=f"Network error: {error}")
         elif isinstance(error, httpx.TimeoutException):
+            # Only actual timeouts should be classified as timeout errors
             raise NodeAPIError(code=-1, detail=f"Timeout error: {error}")
         elif isinstance(error, httpx.HTTPStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
@@ -83,11 +90,14 @@ class Node(PasarGuardNode):
             request_data = self._serialize_protobuf(proto_message)
 
         try:
+            # Convert integer timeout to httpx.Timeout object for explicit timeout configuration
+            # This ensures connection, read, and write timeouts are all set properly
+            httpx_timeout = httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout)
             response = await self._client.request(
                 method=method,
                 url=endpoint,
                 content=request_data,
-                timeout=timeout,
+                timeout=httpx_timeout,
             )
             response.raise_for_status()
 
