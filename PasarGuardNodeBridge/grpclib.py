@@ -111,7 +111,7 @@ class Node(PasarGuardNode):
                 await self.connect(info.node_version, info.core_version, tasks)
             except Exception as e:
                 await self.disconnect()
-                self._handle_error(e)  # This will raise NodeAPIError
+                self._handle_error(e)
 
             return info
 
@@ -481,19 +481,7 @@ class Node(PasarGuardNode):
         """
         try:
             self.logger.debug(f"[{self.name}] Opening user sync stream")
-            # Wrap stream opening with timeout - grpclib's open() may not support timeout parameter
-            # So we manually enter the context manager with a timeout
-            stream_cm = self._client.SyncUser.open(metadata=self._metadata)
-            try:
-                stream = await asyncio.wait_for(stream_cm.__aenter__(), timeout=self._default_timeout)
-            except asyncio.TimeoutError:
-                # If opening times out, try to clean up and re-raise
-                try:
-                    await stream_cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
-                raise
-            try:
+            async with self._client.SyncUser.open(metadata=self._metadata) as stream:
                 self.logger.debug(f"[{self.name}] User sync stream opened successfully")
                 # Stream opened successfully - reset failure counter (this also clears hard reset event)
                 await self._reset_user_sync_failure_count()
@@ -506,21 +494,9 @@ class Node(PasarGuardNode):
                     await self._reset_user_sync_failure_count()
 
                 return stream_failed, sync_retry_delay
-            finally:
-                # Always exit the context manager
-                try:
-                    await stream_cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync stream cancelled")
             raise
-        except asyncio.TimeoutError:
-            # Stream opening timed out
-            self.logger.warning(f"[{self.name}] User sync stream opening timed out after {self._default_timeout}s")
-            # Increment failure counter for stream-level errors
-            await self._increment_user_sync_failure()
-            return True, sync_retry_delay
         except Exception as e:
             error_type = type(e).__name__
             self.logger.error(f"[{self.name}] User sync stream failed | Error: {error_type} - {str(e)}", exc_info=True)
