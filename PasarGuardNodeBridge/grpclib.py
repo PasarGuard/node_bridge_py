@@ -469,6 +469,9 @@ class Node(PasarGuardNode):
                 self.logger.debug(f"[{self.name}] User sync stream opened successfully")
                 # Stream opened successfully - reset failure counter (this also clears hard reset event)
                 await self._reset_user_sync_failure_count()
+                
+                # Flush any pending updates that accumulated during reconnection
+                await self._flush_pending_updates()
 
                 # Process the stream
                 stream_failed, sync_retry_delay = await self._process_user_sync_stream(stream, 1.0, max_retry_delay)
@@ -507,6 +510,10 @@ class Node(PasarGuardNode):
 
                 # Reset retry delay when healthy
                 retry_delay = 10.0
+                
+                # Periodically try to flush pending updates even if stream is not open
+                # This ensures updates aren't lost if stream takes time to reconnect
+                await self._flush_pending_updates()
 
                 # Try to open and process user sync stream
                 stream_failed, sync_retry_delay = await self._open_and_process_user_sync_stream(

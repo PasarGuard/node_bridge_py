@@ -151,6 +151,9 @@ class Controller:
         self._health = Health.NOT_CONNECTED
         self._user_queue: Optional[PriorityUserQueue] = PriorityUserQueue(maxsize=10000)
         self._notify_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10)
+        # Pending updates queue for when main queue is unavailable (during reconnection)
+        self._pending_updates: list[User] = []
+        self._pending_updates_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
@@ -232,16 +235,58 @@ class Controller:
                     )
 
     async def update_user(self, user: User):
+        """Update a single user. If queue is unavailable, store in pending queue."""
         async with self._queue_lock:
             if self._user_queue:
-                await self._user_queue.put(user)
+                try:
+                    await self._user_queue.put(user)
+                    # If we have pending updates, try to flush them
+                    await self._flush_pending_updates()
+                except asyncio.QueueFull:
+                    # Queue is full, add to pending
+                    async with self._pending_updates_lock:
+                        self._pending_updates.append(user)
+                    self.logger.warning(
+                        f"[{self.name}] User queue full, added user {user.email} to pending queue "
+                        f"(pending: {len(self._pending_updates)})"
+                    )
+            else:
+                # Queue is None (during reconnection), store in pending
+                async with self._pending_updates_lock:
+                    self._pending_updates.append(user)
+                self.logger.debug(
+                    f"[{self.name}] User queue unavailable, added user {user.email} to pending queue "
+                    f"(pending: {len(self._pending_updates)})"
+                )
 
     async def update_users(self, users: list[User]):
+        """Update multiple users. If queue is unavailable, store in pending queue."""
+        if not users:
+            return
+        
         async with self._queue_lock:
-            if not self._user_queue or not users:
-                return
-            for user in users:
-                await self._user_queue.put(user)
+            if self._user_queue:
+                try:
+                    for user in users:
+                        await self._user_queue.put(user)
+                    # If we have pending updates, try to flush them
+                    await self._flush_pending_updates()
+                except asyncio.QueueFull:
+                    # Queue is full, add to pending
+                    async with self._pending_updates_lock:
+                        self._pending_updates.extend(users)
+                    self.logger.warning(
+                        f"[{self.name}] User queue full, added {len(users)} users to pending queue "
+                        f"(pending: {len(self._pending_updates)})"
+                    )
+            else:
+                # Queue is None (during reconnection), store in pending
+                async with self._pending_updates_lock:
+                    self._pending_updates.extend(users)
+                self.logger.debug(
+                    f"[{self.name}] User queue unavailable, added {len(users)} users to pending queue "
+                    f"(pending: {len(self._pending_updates)})"
+                )
 
     async def requeue_user_with_deduplication(self, user: User):
         """
@@ -264,6 +309,40 @@ class Controller:
             if self._user_queue:
                 await self._user_queue.close()
                 self._user_queue = PriorityUserQueue(10000)
+            # Clear pending updates when flushing
+            async with self._pending_updates_lock:
+                self._pending_updates.clear()
+    
+    async def _flush_pending_updates(self):
+        """Flush pending updates to the main queue when it becomes available."""
+        if not self._user_queue:
+            return
+        
+        async with self._pending_updates_lock:
+            if not self._pending_updates:
+                return
+            
+            pending = self._pending_updates[:]
+            self._pending_updates.clear()
+        
+        # Flush outside the lock to avoid deadlock
+        if pending:
+            self.logger.info(
+                f"[{self.name}] Flushing {len(pending)} pending user updates to queue"
+            )
+            async with self._queue_lock:
+                if self._user_queue:
+                    for user in pending:
+                        try:
+                            await self._user_queue.put(user)
+                        except asyncio.QueueFull:
+                            # Queue became full again, put back in pending
+                            async with self._pending_updates_lock:
+                                self._pending_updates.append(user)
+                            self.logger.warning(
+                                f"[{self.name}] Queue full while flushing pending updates, "
+                                f"re-added user {user.email} to pending"
+                            )
 
     async def node_version(self) -> str:
         async with self._version_lock:
@@ -320,6 +399,9 @@ class Controller:
             for t in tasks:
                 task = asyncio.create_task(t())
                 self._tasks.append(task)
+        
+        # Flush pending updates now that queue is available
+        await self._flush_pending_updates()
 
     async def disconnect(self):
         # Set shutdown event (no lock needed)
