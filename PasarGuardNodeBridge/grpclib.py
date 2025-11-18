@@ -73,7 +73,7 @@ class Node(PasarGuardNode):
         """Handle a gRPC request and convert errors to NodeAPIError."""
         timeout = timeout or self._internal_timeout
         try:
-            return await method(request, metadata=self._metadata, timeout=timeout)
+            return await asyncio.wait_for(method(request, metadata=self._metadata), timeout=timeout)
         except Exception as e:
             self._handle_error(e)
 
@@ -111,7 +111,7 @@ class Node(PasarGuardNode):
                 await self.connect(info.node_version, info.core_version, tasks)
             except Exception as e:
                 await self.disconnect()
-                self._handle_error(e)
+                self._handle_error(e)  # This will raise NodeAPIError
 
             return info
 
