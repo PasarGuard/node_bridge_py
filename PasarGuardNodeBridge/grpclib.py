@@ -56,7 +56,7 @@ class Node(PasarGuardNode):
     def __del__(self):
         self._close_chan()
 
-    async def _handle_error(self, error: Exception):
+    def _handle_error(self, error: Exception):
         """Convert gRPC errors to NodeAPIError with HTTP status codes."""
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(-1, "Request timed out")
@@ -75,7 +75,7 @@ class Node(PasarGuardNode):
         try:
             return await method(request, metadata=self._metadata, timeout=timeout)
         except Exception as e:
-            await self._handle_error(e)
+            self._handle_error(e)
 
     async def start(
         self,
@@ -209,12 +209,26 @@ class Node(PasarGuardNode):
         """
         Attempt to sync a user via gRPC stream with retry logic for timeout errors.
         Returns (success, is_timeout_error) tuple.
+        
+        Raises StreamTerminatedError or GRPCError if stream is closed/invalid.
+        These should cause the stream to be reopened.
         """
         timeout = timeout or self._internal_timeout
         for attempt in range(max_retries):
             try:
+                # Check if stream is still valid before attempting to send
+                # If stream is closed, send_message will raise StreamTerminatedError immediately
                 await asyncio.wait_for(stream.send_message(user), timeout=timeout)
                 return True, False
+            except (StreamTerminatedError, GRPCError) as e:
+                # Stream errors - these indicate the stream is closed/invalid
+                # Re-raise to signal that stream needs to be reopened
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"[{self.name}] Stream error syncing user {user.email} | "
+                    f"Error: {error_type} - {str(e)}"
+                )
+                raise  # Re-raise to cause stream processing to fail and stream to be reopened
             except asyncio.TimeoutError:
                 # Retry on timeout
                 if attempt < max_retries - 1:
@@ -252,12 +266,13 @@ class Node(PasarGuardNode):
                 last_health = await self.get_health()
 
                 if last_health in (Health.NOT_CONNECTED, Health.INVALID):
-                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state")
+                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state: {last_health.name}")
                     return
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    if last_health != Health.HEALTHY:
+                    # Only update to HEALTHY if we were BROKEN or NOT_CONNECTED
+                    if last_health in (Health.BROKEN, Health.NOT_CONNECTED):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
@@ -310,8 +325,9 @@ class Node(PasarGuardNode):
         """
         health = await self.get_health()
 
+        # Stop for NOT_CONNECTED and INVALID (INVALID means instance is being deleted)
         if health in (Health.NOT_CONNECTED, Health.INVALID):
-            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state")
+            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state: {health.name}")
             return False
         return True
 
@@ -500,13 +516,17 @@ class Node(PasarGuardNode):
                 if not await self._should_continue_task("User sync task"):
                     break
 
-                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
                 health = await self.get_health()
-                if health == Health.BROKEN:
-                    continue
+                was_broken = health == Health.BROKEN
+                # If BROKEN, wait longer but still try to sync to allow recovery
+                if was_broken:
+                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN, but still attempt sync
+                    sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 # Reset retry delay when healthy
-                retry_delay = 10.0
+                if health != Health.BROKEN:
+                    retry_delay = 10.0
 
                 # Try to open and process user sync stream
                 stream_failed, sync_retry_delay = await self._open_and_process_user_sync_stream(
@@ -525,19 +545,11 @@ class Node(PasarGuardNode):
                 else:
                     # Stream succeeded - reset retry delay and ensure health is updated
                     sync_retry_delay = 1.0
-                    # Update health to HEALTHY if it was BROKEN
-                    current_health = await self.get_health()
-                    if current_health == Health.BROKEN:
-                        # Verify node is actually healthy before updating
-                        try:
-                            await self.get_backend_stats()
-                            await self.set_health(Health.HEALTHY)
-                            self.logger.info(f"[{self.name}] Stream recovered, node health updated to HEALTHY")
-                        except Exception as e:
-                            error_type = type(e).__name__
-                            self.logger.debug(
-                                f"[{self.name}] Stream recovered but health check failed | Error: {error_type} - {str(e)}"
-                            )
+                    # Try to recover health if it was BROKEN
+                    # INVALID nodes should not recover (instance is being deleted)
+                    recovery_delays = await self._try_recover_health_after_sync(was_broken, False)
+                    if recovery_delays[0] is not None:
+                        retry_delay, _ = recovery_delays
 
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync task cancelled")
@@ -610,7 +622,7 @@ class Node(PasarGuardNode):
                 # Convert exception to NodeAPIError and put directly into log queue
                 # so user gets immediate notification when reading
                 try:
-                    await self._handle_error(e)
+                    self._handle_error(e)
                 except NodeAPIError as api_error:
                     try:
                         # Put error into log queue for immediate detection
@@ -635,7 +647,7 @@ class Node(PasarGuardNode):
                     if stream_task.done():
                         exc = stream_task.exception()
                         if exc and not isinstance(exc, asyncio.CancelledError):
-                            await self._handle_error(exc)
+                            self._handle_error(exc)
                 finally:
                     # Cleanup: cancel the gRPC stream to unblock recv_message()
                     try:
@@ -658,6 +670,6 @@ class Node(PasarGuardNode):
             error_type = type(e).__name__
             self.logger.error(f"[{self.name}] Failed to open log stream | Error: {error_type} - {str(e)}")
             # Convert to NodeAPIError
-            await self._handle_error(e)
+            self._handle_error(e)
         finally:
             self.logger.debug(f"[{self.name}] On-demand log stream closed")

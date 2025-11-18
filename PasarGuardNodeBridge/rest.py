@@ -61,7 +61,14 @@ class Node(PasarGuardNode):
     def _handle_error(self, error: Exception):
         if isinstance(error, httpx.RemoteProtocolError):
             raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
+        elif isinstance(error, httpx.ConnectError):
+            # Connection errors (connection refused, DNS errors, etc.) are NOT timeouts
+            raise NodeAPIError(code=-2, detail=f"Connection error: {error}")
+        elif isinstance(error, httpx.NetworkError):
+            # Other network errors (not connection errors or timeouts) are NOT timeouts
+            raise NodeAPIError(code=-2, detail=f"Network error: {error}")
         elif isinstance(error, httpx.TimeoutException):
+            # Only actual timeouts should be classified as timeout errors
             raise NodeAPIError(code=-1, detail=f"Timeout error: {error}")
         elif isinstance(error, httpx.HTTPStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
@@ -83,11 +90,14 @@ class Node(PasarGuardNode):
             request_data = self._serialize_protobuf(proto_message)
 
         try:
+            # Convert integer timeout to httpx.Timeout object for explicit timeout configuration
+            # This ensures connection, read, and write timeouts are all set properly
+            httpx_timeout = httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout)
             response = await self._client.request(
                 method=method,
                 url=endpoint,
                 content=request_data,
-                timeout=timeout,
+                timeout=httpx_timeout,
             )
             response.raise_for_status()
 
@@ -279,12 +289,13 @@ class Node(PasarGuardNode):
                 last_health = await self.get_health()
 
                 if last_health in (Health.NOT_CONNECTED, Health.INVALID):
-                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state")
+                    self.logger.debug(f"[{self.name}] Health check task stopped due to node state: {last_health.name}")
                     break
 
                 try:
                     await asyncio.wait_for(self.get_backend_stats(), timeout=10)
-                    if last_health != Health.HEALTHY:
+                    # Only update to HEALTHY if we were BROKEN or NOT_CONNECTED
+                    if last_health in (Health.BROKEN, Health.NOT_CONNECTED):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
@@ -337,8 +348,9 @@ class Node(PasarGuardNode):
         """
         health = await self.get_health()
 
+        # Stop for NOT_CONNECTED and INVALID
         if health in (Health.NOT_CONNECTED, Health.INVALID):
-            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state")
+            self.logger.debug(f"[{self.name}] {task_name} stopped due to node state: {health.name}")
             return False
         return True
 
@@ -474,15 +486,23 @@ class Node(PasarGuardNode):
                 if not await self._should_continue_task("User sync task"):
                     break
 
-                retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
                 health = await self.get_health()
-                if health == Health.BROKEN:
-                    continue
+                was_broken = health == Health.BROKEN
+                # If BROKEN, wait longer but still try to sync to allow recovery
+                if was_broken:
+                    retry_delay = await self._wait_for_healthy_state(retry_delay, max_retry_delay)
+                    # Use longer delay when BROKEN, but still attempt sync
+                    sync_retry_delay = max(sync_retry_delay, 5.0)
 
                 try:
                     retry_delay, sync_retry_delay, _ = await self._process_sync_iteration(
                         retry_delay, sync_retry_delay, max_retry_delay
                     )
+                    
+                    # If sync succeeded and we were BROKEN, try to recover health
+                    recovery_delays = await self._try_recover_health_after_sync(was_broken, False)
+                    if recovery_delays[0] is not None:
+                        retry_delay, sync_retry_delay = recovery_delays
                 except asyncio.CancelledError:
                     self.logger.debug(f"[{self.name}] User sync task cancelled")
                     break
