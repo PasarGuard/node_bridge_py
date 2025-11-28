@@ -472,7 +472,7 @@ class Controller:
             return response
 
         except httpx.HTTPStatusError as e:
-            raise NodeAPIError(code=e.response.status_code, detail=f"HTTP error: {str(e)}") from e
+            raise NodeAPIError(code=e.response.status_code, detail=e.response.json().get("detail", "")) from e
 
         except httpx.RequestError as e:
             raise NodeAPIError(code=-5, detail=f"Request error: {str(e)}") from e
@@ -486,26 +486,26 @@ class Controller:
             self.logger.error(f"[{self.name}] Connectivity check failed: {str(e)}")
             return False
 
-    async def update_node(self) -> dict:
+    async def update_node(self) -> httpx.Response:
         """Trigger a node update via the REST API."""
 
         if not (await self.check_connectivity()):
             raise NodeAPIError(code=503, detail="Node service is not reachable")
         response = await self._make_json_request(method="POST", endpoint="/node/update")
-        return response.json()
+        return response
 
-    async def update_core(self, json: dict) -> dict:
+    async def update_core(self, json: dict) -> httpx.Response:
         """Trigger a node core update via the REST API."""
 
         if not (await self.check_connectivity()):
             raise NodeAPIError(code=503, detail="Node service is not reachable")
         response = await self._make_json_request(method="POST", endpoint="/node/core_update", json=json)
-        return response.json()
+        return response
 
-    async def update_geofiles(self, json: dict) -> dict:
+    async def update_geofiles(self, json: dict) -> httpx.Response:
         """Trigger a node geofiles update via the REST API."""
 
         if not (await self.check_connectivity()):
             raise NodeAPIError(code=503, detail="Node service is not reachable")
         response = await self._make_json_request(method="POST", endpoint="/node/geofiles", json=json)
-        return response.json()
+        return response
