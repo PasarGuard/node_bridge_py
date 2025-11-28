@@ -1,12 +1,13 @@
-import ssl
 import asyncio
 import logging
+import ssl
 from enum import IntEnum
-from uuid import UUID
 from typing import Optional
+from uuid import UUID
+
+import httpx
 
 from PasarGuardNodeBridge.common.service_pb2 import User
-
 
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
@@ -114,6 +115,7 @@ class Controller:
         self,
         server_ca: str,
         api_key: str,
+        base_url: str,
         name: str = "default",
         extra: dict | None = None,
         logger: logging.Logger | None = None,
@@ -169,6 +171,17 @@ class Controller:
         self._task_lock = asyncio.Lock()
 
         self._shutdown_event = asyncio.Event()
+
+        httpx_timeout = httpx.Timeout(
+            default_timeout, connect=default_timeout, read=default_timeout, write=default_timeout
+        )
+        self._json_client = httpx.AsyncClient(
+            http2=True,
+            verify=self.ctx,
+            headers={"Content-Type": "application/json", "x-api-key": api_key},
+            base_url=base_url,
+            timeout=httpx_timeout,
+        )
 
     async def set_health(self, health: Health):
         should_notify = False
@@ -249,30 +262,28 @@ class Controller:
     ) -> tuple[float | None, float | None]:
         """
         Attempt to recover node health from BROKEN or INVALID to HEALTHY after successful sync.
-        
+
         Args:
             was_broken: Whether the node was BROKEN before sync
             was_invalid: Whether the node was INVALID before sync
-            
+
         Returns:
             Tuple of (retry_delay, sync_retry_delay) - (10.0, 1.0) if recovery succeeded,
             (None, None) if no recovery needed or recovery failed
         """
         if not (was_broken or was_invalid):
             return None, None  # No recovery needed
-        
+
         current_health = await self.get_health()
         if current_health not in (Health.BROKEN, Health.INVALID):
             return None, None  # Already recovered
-        
+
         try:
             # Verify node is actually healthy before updating
             await self.get_backend_stats()
             await self.set_health(Health.HEALTHY)
             health_status = "BROKEN" if was_broken else "INVALID"
-            self.logger.info(
-                f"[{self.name}] Sync succeeded while {health_status}, node health updated to HEALTHY"
-            )
+            self.logger.info(f"[{self.name}] Sync succeeded while {health_status}, node health updated to HEALTHY")
             # Return reset delays
             return 10.0, 1.0
         except Exception as e:
@@ -438,3 +449,63 @@ class Controller:
     def is_shutting_down(self) -> bool:
         """Check if the node is shutting down"""
         return self._shutdown_event.is_set()
+
+    async def _make_json_request(
+        self,
+        method: str,
+        endpoint: str,
+        timeout: Optional[int] = None,
+        json: Optional[dict] = None,
+    ) -> httpx.Response:
+        """Make an HTTP request to the node's REST API."""
+        if timeout is None:
+            timeout = self._default_timeout
+
+        try:
+            response = await self._json_client.request(
+                method=method,
+                url=endpoint,
+                json=json,
+                timeout=httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout),
+            )
+            response.raise_for_status()
+            return response
+
+        except httpx.HTTPStatusError as e:
+            raise NodeAPIError(code=e.response.status_code, detail=f"HTTP error: {str(e)}") from e
+
+        except httpx.RequestError as e:
+            raise NodeAPIError(code=-5, detail=f"Request error: {str(e)}") from e
+
+    async def check_connectivity(self) -> bool:
+        """Check if the node service is reachable via its REST API."""
+        try:
+            response = await self._make_json_request(method="GET", endpoint="/", timeout=5)
+            return response.status_code == 200
+        except NodeAPIError as e:
+            self.logger.error(f"[{self.name}] Connectivity check failed: {str(e)}")
+            return False
+
+    async def update_node(self) -> dict:
+        """Trigger a node update via the REST API."""
+
+        if not (await self.check_connectivity()):
+            raise NodeAPIError(code=-7, detail="Node service is not reachable")
+        response = await self._make_json_request(method="POST", endpoint="/node/update")
+        return response.json()
+
+    async def update_core(self, json: dict) -> dict:
+        """Trigger a node core update via the REST API."""
+
+        if not (await self.check_connectivity()):
+            raise NodeAPIError(code=-7, detail="Node service is not reachable")
+        response = await self._make_json_request(method="POST", endpoint="/node/core_update", json=json)
+        return response.json()
+
+    async def update_geofiles(self, json: dict) -> dict:
+        """Trigger a node geofiles update via the REST API."""
+
+        if not (await self.check_connectivity()):
+            raise NodeAPIError(code=-7, detail="Node service is not reachable")
+        response = await self._make_json_request(method="POST", endpoint="/node/geofiles", json=json)
+        return response.json()
