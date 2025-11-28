@@ -7,10 +7,10 @@ from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 
-from PasarGuardNodeBridge.common import service_pb2 as service
-from PasarGuardNodeBridge.common import service_grpc
-from PasarGuardNodeBridge.controller import NodeAPIError, Health
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
+from PasarGuardNodeBridge.common import service_grpc
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.utils import grpc_to_http_status
 
 
@@ -27,7 +27,8 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
     ):
-        super().__init__(server_ca, api_key, name, extra, logger, default_timeout, internal_timeout)
+        url = f"https://{address.strip('/')}:{port}/"
+        super().__init__(server_ca, api_key, url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))

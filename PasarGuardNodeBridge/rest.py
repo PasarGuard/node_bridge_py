@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import httpx
-from google.protobuf.message import Message, DecodeError
+from google.protobuf.message import DecodeError, Message
 
-from PasarGuardNodeBridge.controller import NodeAPIError, Health
-from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.controller import Health, NodeAPIError
 
 
 class Node(PasarGuardNode):
@@ -24,9 +24,10 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
     ):
-        super().__init__(server_ca, api_key, name, extra, logger, default_timeout, internal_timeout)
 
         url = f"https://{address.strip('/')}:{port}/"
+        super().__init__(server_ca, api_key, url, name, extra, logger, default_timeout, internal_timeout)
+
 
         self._client = httpx.AsyncClient(
             http2=True,
