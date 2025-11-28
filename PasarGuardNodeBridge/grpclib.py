@@ -19,6 +19,7 @@ class Node(PasarGuardNode):
         self,
         address: str,
         port: int,
+        api_port: int,
         server_ca: str,
         api_key: str,
         name: str = "default",
@@ -27,8 +28,8 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
     ):
-        url = f"https://{address.strip('/')}:{port}/"
-        super().__init__(server_ca, api_key, url, name, extra, logger, default_timeout, internal_timeout)
+        service_url = f"https://{address.strip('/')}:{api_port}/"
+        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
             self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
@@ -210,7 +211,7 @@ class Node(PasarGuardNode):
         """
         Attempt to sync a user via gRPC stream with retry logic for timeout errors.
         Returns (success, is_timeout_error) tuple.
-        
+
         Raises StreamTerminatedError or GRPCError if stream is closed/invalid.
         These should cause the stream to be reopened.
         """
@@ -226,8 +227,7 @@ class Node(PasarGuardNode):
                 # Re-raise to signal that stream needs to be reopened
                 error_type = type(e).__name__
                 self.logger.warning(
-                    f"[{self.name}] Stream error syncing user {user.email} | "
-                    f"Error: {error_type} - {str(e)}"
+                    f"[{self.name}] Stream error syncing user {user.email} | Error: {error_type} - {str(e)}"
                 )
                 raise  # Re-raise to cause stream processing to fail and stream to be reopened
             except asyncio.TimeoutError:
@@ -248,7 +248,7 @@ class Node(PasarGuardNode):
                 # Other errors, don't retry
                 error_type = type(e).__name__
                 self.logger.error(
-                    f"[{self.name}] Unexpected error syncing user {user.email} | " f"Error: {error_type} - {str(e)}",
+                    f"[{self.name}] Unexpected error syncing user {user.email} | Error: {error_type} - {str(e)}",
                     exc_info=True,
                 )
                 return False, False

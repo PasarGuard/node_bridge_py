@@ -115,7 +115,7 @@ class Controller:
         self,
         server_ca: str,
         api_key: str,
-        base_url: str,
+        service_url: str,
         name: str = "default",
         extra: dict | None = None,
         logger: logging.Logger | None = None,
@@ -179,7 +179,7 @@ class Controller:
             http2=True,
             verify=self.ctx,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
-            base_url=base_url,
+            base_url=service_url,
             timeout=httpx_timeout,
         )
 

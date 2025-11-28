@@ -16,6 +16,7 @@ class Node(PasarGuardNode):
         self,
         address: str,
         port: int,
+        api_port: int,
         server_ca: str,
         api_key: str,
         name: str = "default",
@@ -24,11 +25,10 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
     ):
+        service_url = f"https://{address.strip('/')}:{api_port}/"
+        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         url = f"https://{address.strip('/')}:{port}/"
-        super().__init__(server_ca, api_key, url, name, extra, logger, default_timeout, internal_timeout)
-
-
         self._client = httpx.AsyncClient(
             http2=True,
             verify=self.ctx,
@@ -271,7 +271,7 @@ class Node(PasarGuardNode):
                 # Unexpected error, don't retry
                 error_type = type(e).__name__
                 self.logger.error(
-                    f"[{self.name}] Unexpected error syncing user {user.email} | " f"Error: {error_type} - {str(e)}",
+                    f"[{self.name}] Unexpected error syncing user {user.email} | Error: {error_type} - {str(e)}",
                     exc_info=True,
                 )
                 return False, False
@@ -499,7 +499,7 @@ class Node(PasarGuardNode):
                     retry_delay, sync_retry_delay, _ = await self._process_sync_iteration(
                         retry_delay, sync_retry_delay, max_retry_delay
                     )
-                    
+
                     # If sync succeeded and we were BROKEN, try to recover health
                     recovery_delays = await self._try_recover_health_after_sync(was_broken, False)
                     if recovery_delays[0] is not None:
