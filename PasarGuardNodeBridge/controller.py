@@ -490,7 +490,7 @@ class Controller:
         """Trigger a node update via the REST API."""
 
         if not (await self.check_connectivity()):
-            raise NodeAPIError(code=-7, detail="Node service is not reachable")
+            raise NodeAPIError(code=503, detail="Node service is not reachable")
         response = await self._make_json_request(method="POST", endpoint="/node/update")
         return response.json()
 
@@ -498,7 +498,7 @@ class Controller:
         """Trigger a node core update via the REST API."""
 
         if not (await self.check_connectivity()):
-            raise NodeAPIError(code=-7, detail="Node service is not reachable")
+            raise NodeAPIError(code=503, detail="Node service is not reachable")
         response = await self._make_json_request(method="POST", endpoint="/node/core_update", json=json)
         return response.json()
 
@@ -506,6 +506,6 @@ class Controller:
         """Trigger a node geofiles update via the REST API."""
 
         if not (await self.check_connectivity()):
-            raise NodeAPIError(code=-7, detail="Node service is not reachable")
+            raise NodeAPIError(code=503, detail="Node service is not reachable")
         response = await self._make_json_request(method="POST", endpoint="/node/geofiles", json=json)
         return response.json()
