@@ -12,20 +12,20 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: PasarGuard
-Version: 0.2.6
+Version: 0.3.0
 """
 
-__version__ = "0.2.6"
+__version__ = "0.3.0"
 __author__ = "PasarGuard"
 
 
 from enum import Enum
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
+from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.grpclib import Node as GrpcNode
 from PasarGuardNodeBridge.rest import Node as RestNode
-from PasarGuardNodeBridge.controller import NodeAPIError, Health
-from PasarGuardNodeBridge.utils import create_user, create_proxy
+from PasarGuardNodeBridge.utils import create_proxy, create_user
 
 
 class NodeType(str, Enum):

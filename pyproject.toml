@@ -1,35 +1,31 @@
 [project]
 name = "pasarguard-node-bridge"
-version = "0.2.6"
+version = "0.3.0"
 description = "python package to connect your project with PasarGuard node go"
 url = "https://github.com/PasarGuard/node_bridge_py"
-keywords = ["PasarGuard-Node", "PasarGuard", "PasarGuard-panel", "PasarGuard python", "PasarGuard API"]
+keywords = [
+    "PasarGuard-Node",
+    "PasarGuard",
+    "PasarGuard-panel",
+    "PasarGuard python",
+    "PasarGuard API",
+]
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "grpclib>=0.4.8",
-    "httpx>=0.28.1",
-    "protobuf>=6.31.1",
-]
+dependencies = ["grpclib>=0.4.8", "httpx>=0.28.1", "protobuf>=6.31.1"]
 
-classifiers = [
-    "Programming Language :: Python :: 3.12",
-]
+classifiers = ["Programming Language :: Python :: 3.12"]
 
 [project.urls]
 Homepage = "https://github.com/PasarGuard/node_bridge_py"
 Repository = "https://github.com/PasarGuard/node_bridge_py.git"
 
 [dependency-groups]
-dev = [
-  "grpcio-tools>=1.73.1",
-]
+dev = ["grpcio-tools>=1.73.1"]
 
 [tool.ruff]
 line-length = 120
-exclude = [
-    "PasarGuardNodeBridge/common",
-]
+exclude = ["PasarGuardNodeBridge/common"]
 
 [build-system]
 requires = ["hatchling"]
