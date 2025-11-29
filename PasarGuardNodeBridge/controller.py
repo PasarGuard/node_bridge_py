@@ -2,6 +2,7 @@ import asyncio
 import logging
 import ssl
 from enum import IntEnum
+from json import JSONDecodeError
 from typing import Optional
 from uuid import UUID
 
@@ -472,7 +473,17 @@ class Controller:
             return response
 
         except httpx.HTTPStatusError as e:
-            raise NodeAPIError(code=e.response.status_code, detail=e.response.json().get("detail", "")) from e
+            detail = ""
+            try:
+                data = e.response.json()
+                if isinstance(data, dict):
+                    detail = data.get("detail", "")
+                else:
+                    detail = str(data)
+            except (JSONDecodeError, ValueError):
+                detail = e.response.text
+
+            raise NodeAPIError(code=e.response.status_code, detail=detail) from e
 
         except httpx.RequestError as e:
             raise NodeAPIError(code=-5, detail=f"Request error: {str(e)}") from e
