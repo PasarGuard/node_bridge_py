@@ -536,28 +536,43 @@ class Node(PasarGuardNode):
                 if health != Health.BROKEN:
                     retry_delay = 10.0
 
-                # Try to open and process user sync stream
-                stream_failed, sync_retry_delay = await self._open_and_process_user_sync_stream(
-                    sync_retry_delay, max_retry_delay
-                )
+                try:
+                    # Try to open and process user sync stream
+                    stream_failed, sync_retry_delay = await self._open_and_process_user_sync_stream(
+                        sync_retry_delay, max_retry_delay
+                    )
 
-                if stream_failed:
-                    self.logger.warning(
-                        f"[{self.name}] User sync stream failed, retrying in {sync_retry_delay} seconds"
+                    if stream_failed:
+                        self.logger.warning(
+                            f"[{self.name}] User sync stream failed, retrying in {sync_retry_delay} seconds"
+                        )
+                        try:
+                            await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
+                        except asyncio.TimeoutError:
+                            pass
+                        sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
+                    else:
+                        # Stream succeeded - reset retry delay and ensure health is updated
+                        sync_retry_delay = 1.0
+                        # Try to recover health if it was BROKEN
+                        # INVALID nodes should not recover (instance is being deleted)
+                        recovery_delays = await self._try_recover_health_after_sync(was_broken, False)
+                        if recovery_delays[0] is not None:
+                            retry_delay, _ = recovery_delays
+
+                except asyncio.CancelledError:
+                    self.logger.debug(f"[{self.name}] User sync task cancelled")
+                    break
+                except Exception as e:
+                    error_type = type(e).__name__
+                    self.logger.error(
+                        f"[{self.name}] Error in user sync task | Error: {error_type} - {str(e)}", exc_info=True
                     )
                     try:
                         await asyncio.wait_for(asyncio.sleep(sync_retry_delay), timeout=sync_retry_delay + 1)
                     except asyncio.TimeoutError:
                         pass
                     sync_retry_delay = min(sync_retry_delay * 2, max_retry_delay)
-                else:
-                    # Stream succeeded - reset retry delay and ensure health is updated
-                    sync_retry_delay = 1.0
-                    # Try to recover health if it was BROKEN
-                    # INVALID nodes should not recover (instance is being deleted)
-                    recovery_delays = await self._try_recover_health_after_sync(was_broken, False)
-                    if recovery_delays[0] is not None:
-                        retry_delay, _ = recovery_delays
 
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] User sync task cancelled")
