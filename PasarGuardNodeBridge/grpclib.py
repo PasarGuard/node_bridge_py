@@ -11,7 +11,7 @@ from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
-from PasarGuardNodeBridge.utils import grpc_to_http_status
+from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
 
 class Node(PasarGuardNode):
@@ -28,11 +28,18 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
     ):
-        service_url = f"https://{address.strip('/')}:{api_port}/"
+        host_for_url = format_host_for_url(address)
+        service_url = f"https://{host_for_url}:{api_port}/"
+        print(f"Service URL: {service_url}")
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
-            self.channel = Channel(host=address, port=port, ssl=self.ctx, config=Configuration(_keepalive_timeout=10))
+            self.channel = Channel(
+                host=address,
+                port=port,
+                ssl=self.ctx,
+                config=Configuration(_keepalive_timeout=10),
+            )
             self._client = service_grpc.NodeServiceStub(self.channel)
             self._metadata = {"x-api-key": api_key}
         except Exception as e:

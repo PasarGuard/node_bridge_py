@@ -4,6 +4,7 @@ import PasarGuardNodeBridge as Bridge
 
 address = "172.27.158.135"
 port = 2096
+api_port = 2097
 server_ca_file = "certs/ssl_cert.pem"
 config_file = "config/xray.json"
 api_key = "d04d8680-942d-4365-992f-9f482275691d"
@@ -24,6 +25,7 @@ async def main():
         connection=Bridge.NodeType.grpc,
         address=address,
         port=port,
+        api_port=api_port,
         server_ca=server_ca_content,
         api_key=api_key,
         extra={"id": 1},

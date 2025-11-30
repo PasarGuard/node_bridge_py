@@ -9,6 +9,7 @@ from google.protobuf.message import DecodeError, Message
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
+from PasarGuardNodeBridge.utils import format_host_for_url
 
 
 class Node(PasarGuardNode):
@@ -25,10 +26,11 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
     ):
-        service_url = f"https://{address.strip('/')}:{api_port}/"
+        host_for_url = format_host_for_url(address)
+        service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
-        url = f"https://{address.strip('/')}:{port}/"
+        url = f"https://{host_for_url}:{port}/"
         self._client = httpx.AsyncClient(
             http2=True,
             verify=self.ctx,
