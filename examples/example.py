@@ -1,4 +1,5 @@
 import asyncio
+from logging import getLogger, DEBUG, StreamHandler, Formatter
 
 import PasarGuardNodeBridge as Bridge
 
@@ -21,6 +22,14 @@ async def main():
     # - default_timeout: applies to all public API methods (start, stop, info, get_*, sync_*)
     # - internal_timeout: applies to internal gRPC/HTTP operations
     # These can be overridden per-call by passing timeout parameter to individual methods
+
+    logger = getLogger("example-node")
+    logger.setLevel(DEBUG)
+    handler = StreamHandler()
+    handler.setLevel(DEBUG)
+    handler.setFormatter(Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+
     node = Bridge.create_node(
         connection=Bridge.NodeType.grpc,
         address=address,
@@ -31,7 +40,8 @@ async def main():
         extra={"id": 1},
         name="example-node",
         default_timeout=15,  # Custom default timeout for API calls (default: 10s)
-        internal_timeout=20,  # Custom timeout for internal operations (default: 15s)
+        internal_timeout=20,
+        logger=logger,  # Custom timeout for internal operations (default: 15s)
     )
 
     # Start the node with custom timeout override (60s instead of instance default 15s)

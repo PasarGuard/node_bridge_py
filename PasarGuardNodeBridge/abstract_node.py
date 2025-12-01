@@ -53,7 +53,7 @@ class PasarGuardNode(Controller, ABC):
 
     @abstractmethod
     async def sync_users(
-        self, users: list[service.User], flush_queue: bool, timeout: int | None
+        self, users: list[service.User], flush_pending: bool, timeout: int | None
     ) -> service.Empty | None:
         raise NotImplementedError
 
@@ -62,9 +62,10 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[Queue]:
+    async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
+        """Sync a batch of users individually. Returns list of failed users to requeue."""
         raise NotImplementedError
 
     @abstractmethod
-    async def _sync_user(self):
+    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[Queue]:
         raise NotImplementedError

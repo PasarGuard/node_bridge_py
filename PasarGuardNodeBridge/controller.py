@@ -15,86 +15,6 @@ DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
 DEFAULT_INTERNAL_TIMEOUT = 15  # Default timeout for internal gRPC/HTTP operations
 
 
-class PriorityUserQueue(asyncio.PriorityQueue):
-    """Priority queue that tracks pending user emails to avoid duplicate entries.
-    Lower priority number = higher priority (0 is highest)
-    """
-
-    def __init__(self, maxsize=0):
-        super().__init__(maxsize)
-        self._email_count: dict[str, int] = {}  # Track count of each email in queue
-        self._closed = False
-        self._counter = 0  # Ensures FIFO for same priority
-
-    async def close(self):
-        """Close the queue and prevent further operations"""
-        self._closed = True
-        while not self.empty():
-            try:
-                self.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-    async def put(self, item, priority: int = 5):
-        """Add user to queue with priority and track their email.
-        Priority: 0 (highest) to 10 (lowest), default is 5
-        """
-        if self._closed:
-            return
-        if item and hasattr(item, "email"):
-            self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
-        # Use counter to ensure FIFO for same priority
-        self._counter += 1
-        await super().put((priority, self._counter, item))
-
-    def put_nowait(self, item, priority: int = 5):
-        """Add user to queue without waiting with priority and track their email"""
-        if self._closed:
-            return
-        if item and hasattr(item, "email"):
-            self._email_count[item.email] = self._email_count.get(item.email, 0) + 1
-        self._counter += 1
-        super().put_nowait((priority, self._counter, item))
-
-    def _update_email_count(self, item):
-        """Update email count when removing a user from queue"""
-        if item and hasattr(item, "email"):
-            if item.email in self._email_count:
-                self._email_count[item.email] -= 1
-                if self._email_count[item.email] <= 0:
-                    del self._email_count[item.email]
-
-    async def get(self):
-        """Remove and return user from queue, updating email count.
-        Returns the actual item, not the priority tuple.
-        """
-        if self._closed:
-            return
-        priority_tuple = await super().get()
-        if priority_tuple is None:
-            return None
-        # Extract item from (priority, counter, item) tuple
-        _, _, item = priority_tuple
-        self._update_email_count(item)
-        return item
-
-    def get_nowait(self):
-        """Remove and return user from queue without waiting, updating email count"""
-        if self._closed:
-            return
-        priority_tuple = super().get_nowait()
-        if priority_tuple is None:
-            return None
-        # Extract item from (priority, counter, item) tuple
-        _, _, item = priority_tuple
-        self._update_email_count(item)
-        return item
-
-    def has_email(self, email: str) -> bool:
-        """Check if a user with this email is already queued"""
-        return email in self._email_count and self._email_count[email] > 0
-
-
 class NodeAPIError(Exception):
     def __init__(self, code, detail):
         self.code = code
@@ -152,12 +72,16 @@ class Controller:
             raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
 
         self._health = Health.NOT_CONNECTED
-        self._user_queue: Optional[PriorityUserQueue] = PriorityUserQueue(maxsize=10000)
-        self._notify_queue: Optional[asyncio.Queue] = asyncio.Queue(maxsize=10)
         self._tasks: list[asyncio.Task] = []
         self._node_version = ""
         self._core_version = ""
         self._extra = extra
+
+        # Lazy worker sync mechanism
+        self._pending_users: dict[str, User] = {}  # email -> User (auto-dedup)
+        self._sync_worker_task: asyncio.Task | None = None
+        self._work_available = asyncio.Event()
+        self._worker_idle_timeout = 5.0  # seconds before worker exits
 
         # Hard reset mechanism for critical failures
         self._hard_reset_event = asyncio.Event()
@@ -167,7 +91,8 @@ class Controller:
 
         # Separate locks for different resources to reduce contention
         self._health_lock = asyncio.Lock()
-        self._queue_lock = asyncio.Lock()
+        self._pending_users_lock = asyncio.Lock()
+        self._sync_worker_lock = asyncio.Lock()
         self._version_lock = asyncio.Lock()
         self._task_lock = asyncio.Lock()
 
@@ -185,31 +110,11 @@ class Controller:
         )
 
     async def set_health(self, health: Health):
-        should_notify = False
-
         async with self._health_lock:
             # INVALID is permanent - once set, it cannot be changed (instance is being deleted)
             if self._health is Health.INVALID:
                 return
-            if health == Health.BROKEN and self._health != Health.BROKEN:
-                should_notify = self._notify_queue is not None
             self._health = health
-
-        # Notify outside the lock to avoid blocking
-        if should_notify:
-            try:
-                await asyncio.wait_for(self._notify_queue.put(None), timeout=0.5)
-            except asyncio.TimeoutError:
-                self.logger.warning(f"[{self.name}] Timeout notifying queue about health change to {health.name}")
-            except asyncio.QueueFull:
-                self.logger.warning(f"[{self.name}] Queue full, cannot notify about health change to {health.name}")
-            except AttributeError as e:
-                self.logger.error(f"[{self.name}] Notify queue unavailable | Error: AttributeError - {str(e)}")
-            except Exception as e:
-                error_type = type(e).__name__
-                self.logger.error(
-                    f"[{self.name}] Unexpected error notifying queue | Error: {error_type} - {str(e)}", exc_info=True
-                )
 
     async def get_health(self) -> Health:
         async with self._health_lock:
@@ -247,16 +152,26 @@ class Controller:
                     )
 
     async def update_user(self, user: User):
-        async with self._queue_lock:
-            if self._user_queue:
-                await self._user_queue.put(user)
+        """Queue a user for sync. Automatically deduplicates by email."""
+        async with self._pending_users_lock:
+            self._pending_users[user.email] = user  # Latest version wins
+            self._work_available.set()
+
+        # Ensure worker is running to process the update
+        await self._ensure_sync_worker_running()
 
     async def update_users(self, users: list[User]):
-        async with self._queue_lock:
-            if not self._user_queue or not users:
-                return
+        """Queue multiple users for sync. Automatically deduplicates by email."""
+        if not users:
+            return
+
+        async with self._pending_users_lock:
             for user in users:
-                await self._user_queue.put(user)
+                self._pending_users[user.email] = user  # Latest version wins
+            self._work_available.set()
+
+        # Ensure worker is running to process the updates
+        await self._ensure_sync_worker_running()
 
     async def _try_recover_health_after_sync(
         self, was_broken: bool, was_invalid: bool
@@ -296,27 +211,11 @@ class Controller:
             )
             return None, None  # Keep current delays
 
-    async def requeue_user_with_deduplication(self, user: User):
-        """
-        Requeue a user only if there's no existing version in the queue.
-        Uses the UserQueue's email tracking to prevent duplicate entries.
-        """
-        async with self._queue_lock:
-            if not self._user_queue:
-                return
-
-            # Only requeue if user is not already in queue
-            if not self._user_queue.has_email(user.email):
-                try:
-                    await self._user_queue.put(user)
-                except asyncio.QueueFull:
-                    pass
-
-    async def flush_user_queue(self):
-        async with self._queue_lock:
-            if self._user_queue:
-                await self._user_queue.close()
-                self._user_queue = PriorityUserQueue(10000)
+    async def flush_pending_users(self):
+        """Clear all pending users without syncing them."""
+        async with self._pending_users_lock:
+            self._pending_users.clear()
+            self._work_available.clear()
 
     async def node_version(self) -> str:
         async with self._version_lock:
@@ -382,9 +281,8 @@ class Controller:
         async with self._task_lock:
             await self._cleanup_tasks()
 
-        # Cleanup queues
-        async with self._queue_lock:
-            await self._cleanup_queues()
+        # Cleanup sync worker and pending users
+        await self._cleanup_sync_worker()
 
         # Clear versions and set health atomically to prevent race condition
         async with self._health_lock:
@@ -417,39 +315,127 @@ class Controller:
 
             self._tasks.clear()
 
-    async def _cleanup_queues(self):
-        """Properly clean up all queues - must be called with queue_lock held"""
-        if self._user_queue:
-            try:
-                await asyncio.wait_for(self._user_queue.put(None), timeout=0.1)
-            except (asyncio.TimeoutError, asyncio.QueueFull):
-                pass
-
-            while not self._user_queue.empty():
+    async def _cleanup_sync_worker(self):
+        """Clean up sync worker and pending users."""
+        # Cancel sync worker if running
+        async with self._sync_worker_lock:
+            if self._sync_worker_task and not self._sync_worker_task.done():
+                self._sync_worker_task.cancel()
                 try:
-                    self._user_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+                    await asyncio.wait_for(self._sync_worker_task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                self._sync_worker_task = None
 
-            self._user_queue = PriorityUserQueue(maxsize=10000)
-
-        if self._notify_queue:
-            try:
-                await asyncio.wait_for(self._notify_queue.put(None), timeout=0.1)
-            except (asyncio.TimeoutError, asyncio.QueueFull):
-                pass
-
-            while not self._notify_queue.empty():
-                try:
-                    self._notify_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
-            self._notify_queue = asyncio.Queue(maxsize=10)
+        # Clear pending users
+        async with self._pending_users_lock:
+            self._pending_users.clear()
+            self._work_available.clear()
 
     def is_shutting_down(self) -> bool:
         """Check if the node is shutting down"""
         return self._shutdown_event.is_set()
+
+    async def _ensure_sync_worker_running(self):
+        """Spawn sync worker if not already running."""
+        async with self._sync_worker_lock:
+            if self._sync_worker_task is None or self._sync_worker_task.done():
+                self._sync_worker_task = asyncio.create_task(self._sync_worker())
+
+    async def _drain_pending_users(self) -> list[User]:
+        """Atomically get and clear all pending users."""
+        async with self._pending_users_lock:
+            if not self._pending_users:
+                self._work_available.clear()
+                return []
+            users = list(self._pending_users.values())
+            self._pending_users.clear()
+            self._work_available.clear()
+            return users
+
+    async def _requeue_failed_users(self, users: list[User]):
+        """Re-queue users that failed to sync (only if not already pending)."""
+        async with self._pending_users_lock:
+            for user in users:
+                # Only re-queue if there's no newer version pending
+                if user.email not in self._pending_users:
+                    self._pending_users[user.email] = user
+            if self._pending_users:
+                self._work_available.set()
+
+    async def _sync_worker(self):
+        """Lazy worker that processes pending users and exits when idle."""
+        self.logger.debug(f"[{self.name}] Sync worker started")
+        retry_delay = 1.0
+        max_retry_delay = 30.0
+
+        try:
+            while not self.is_shutting_down():
+                # Wait for work or timeout
+                try:
+                    await asyncio.wait_for(self._work_available.wait(), timeout=self._worker_idle_timeout)
+                except asyncio.TimeoutError:
+                    # No work for idle_timeout seconds, exit worker
+                    self.logger.debug(f"[{self.name}] Sync worker idle, exiting")
+                    break
+
+                # Check health - don't sync if not connected or invalid
+                health = await self.get_health()
+                if health == Health.NOT_CONNECTED:
+                    self.logger.debug(f"[{self.name}] Sync worker exiting - not connected")
+                    break
+                if health == Health.INVALID:
+                    self.logger.debug(f"[{self.name}] Sync worker exiting - node invalid")
+                    break
+
+                # If BROKEN, wait and loop back without draining users
+                if health == Health.BROKEN:
+                    self.logger.warning(f"[{self.name}] Node is broken, waiting {retry_delay}s before retry")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                    continue
+
+                # Drain all pending users atomically (only when healthy)
+                users = await self._drain_pending_users()
+                if not users:
+                    continue
+
+                # Batch sync users individually
+                try:
+                    failed_users = await self._sync_batch_users(users)
+                    if failed_users:
+                        self.logger.warning(f"[{self.name}] {len(failed_users)}/{len(users)} users failed to sync")
+                        await self._requeue_failed_users(failed_users)
+                        await self._increment_user_sync_failure()
+                        # Exponential backoff on partial failure
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                    else:
+                        self.logger.debug(f"[{self.name}] Synced {len(users)} user(s)")
+                        await self._reset_user_sync_failure_count()
+                        retry_delay = 1.0  # Reset retry delay on success
+
+                except Exception as e:
+                    error_type = type(e).__name__
+                    self.logger.warning(
+                        f"[{self.name}] Batch sync failed for {len(users)} user(s), requeuing | "
+                        f"Error: {error_type} - {str(e)}"
+                    )
+                    await self._increment_user_sync_failure()
+                    await self._requeue_failed_users(users)
+                    # Exponential backoff on failure
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, max_retry_delay)
+
+        except asyncio.CancelledError:
+            self.logger.debug(f"[{self.name}] Sync worker cancelled")
+        except Exception as e:
+            error_type = type(e).__name__
+            self.logger.error(
+                f"[{self.name}] Unexpected error in sync worker | Error: {error_type} - {str(e)}", exc_info=True
+            )
+        finally:
+            self.logger.debug(f"[{self.name}] Sync worker finished")
 
     async def _make_json_request(
         self,
