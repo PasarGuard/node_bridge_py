@@ -43,10 +43,12 @@ class Node(PasarGuardNode):
                 host=address,
                 port=port,
                 ssl=self.ctx,
-                config=Configuration(_keepalive_timeout=10),
-                options={
-                    "grpc.max_send_message_length": max_message_size,
-                },
+                # Align HTTP/2 windows with desired message size; grpclib doesn't expose grpc.options
+                config=Configuration(
+                    _keepalive_timeout=10,
+                    http2_connection_window_size=max_message_size,
+                    http2_stream_window_size=max_message_size,
+                ),
             )
             self._client = service_grpc.NodeServiceStub(self.channel)
             self._metadata = {"x-api-key": api_key}
