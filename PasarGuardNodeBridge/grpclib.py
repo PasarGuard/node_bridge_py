@@ -35,10 +35,11 @@ class Node(PasarGuardNode):
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
-            # Set max message size to 5MB to handle large node configurations
+            # Set HTTP/2 window sizes to 10MB to handle large node configurations
             # Default is 4MB which can be exceeded with many users or large configs
+            # http2_connection_window_size and http2_stream_window_size control max message size
             if max_message_size is None:
-                max_message_size = 5 * 1024 * 1024  # 5MB
+                max_message_size = 10 * 1024 * 1024  # 10MB
             self._max_message_size = max_message_size
             self.channel = Channel(
                 host=address,
@@ -46,9 +47,8 @@ class Node(PasarGuardNode):
                 ssl=self.ctx,
                 config=Configuration(
                     _keepalive_timeout=10,
-                    _max_message_length=max_message_size,
-                    _max_receive_message_length=max_message_size,
-                    _max_send_message_length=max_message_size,
+                    http2_connection_window_size=max_message_size,
+                    http2_stream_window_size=max_message_size,
                 ),
             )
             self._client = service_grpc.NodeServiceStub(self.channel)
