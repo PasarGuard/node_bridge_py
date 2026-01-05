@@ -34,10 +34,10 @@ class Node(PasarGuardNode):
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
-            # Set max message size to 10MB to handle large node configurations
+            # Set max message size to 5MB to handle large node configurations
             # Default is 4MB which can be exceeded with many users or large configs
             if max_message_size is None:
-                max_message_size = 10 * 1024 * 1024  # 10MB
+                max_message_size = 5 * 1024 * 1024  # 5MB
             self.channel = Channel(
                 host=address,
                 port=port,
