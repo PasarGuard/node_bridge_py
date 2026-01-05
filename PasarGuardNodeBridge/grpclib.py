@@ -39,15 +39,16 @@ class Node(PasarGuardNode):
             # Default is 4MB which can be exceeded with many users or large configs
             if max_message_size is None:
                 max_message_size = 5 * 1024 * 1024  # 5MB
+            self._max_message_size = max_message_size
             self.channel = Channel(
                 host=address,
                 port=port,
                 ssl=self.ctx,
-                # Align HTTP/2 windows with desired message size; grpclib doesn't expose grpc.options
                 config=Configuration(
                     _keepalive_timeout=10,
-                    http2_connection_window_size=max_message_size,
-                    http2_stream_window_size=max_message_size,
+                    _max_message_length=max_message_size,
+                    _max_receive_message_length=max_message_size,
+                    _max_send_message_length=max_message_size,
                 ),
             )
             self._client = service_grpc.NodeServiceStub(self.channel)
