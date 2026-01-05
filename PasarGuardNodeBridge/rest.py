@@ -25,6 +25,7 @@ class Node(PasarGuardNode):
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
+        **kwargs,
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
