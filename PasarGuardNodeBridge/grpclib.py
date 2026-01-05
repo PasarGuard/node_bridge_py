@@ -28,6 +28,9 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
         max_message_size: int | None = None,
+        streaming_users_threshold: int = 1 * 1024 * 1024,
+        http2_connection_window_size: int | None = None,
+        http2_stream_window_size: int | None = None,
         **kwargs,
     ):
         host_for_url = format_host_for_url(address)
@@ -41,14 +44,17 @@ class Node(PasarGuardNode):
             if max_message_size is None:
                 max_message_size = 10 * 1024 * 1024  # 10MB
             self._max_message_size = max_message_size
+            self._streaming_users_threshold = max(streaming_users_threshold, 0)
+            connection_window = http2_connection_window_size or max_message_size
+            stream_window = http2_stream_window_size or max_message_size
             self.channel = Channel(
                 host=address,
                 port=port,
                 ssl=self.ctx,
                 config=Configuration(
                     _keepalive_timeout=10,
-                    http2_connection_window_size=max_message_size,
-                    http2_stream_window_size=max_message_size,
+                    http2_connection_window_size=connection_window,
+                    http2_stream_window_size=stream_window,
                 ),
             )
             self._client = service_grpc.NodeServiceStub(self.channel)
@@ -88,6 +94,10 @@ class Node(PasarGuardNode):
             raise NodeAPIError(-1, f"Stream terminated: {str(error)}")
         else:
             raise NodeAPIError(0, str(error))
+
+    def _should_stream_users(self, users_size: int) -> bool:
+        """Decide whether to fall back to client-streaming SyncUser for large batches."""
+        return self._streaming_users_threshold > 0 and users_size >= self._streaming_users_threshold
 
     async def _handle_grpc_request(self, method, request, timeout: int | None = None):
         """Handle a gRPC request and convert errors to NodeAPIError."""
@@ -211,12 +221,32 @@ class Node(PasarGuardNode):
         if flush_pending:
             await self.flush_pending_users()
 
+        users_message = service.Users(users=users)
+        users_size = users_message.ByteSize()
+
         async with self._node_lock:
+            if self._should_stream_users(users_size):
+                return await self._stream_users_via_sync_user(users, timeout)
+
             return await self._handle_grpc_request(
                 method=self._client.SyncUsers,
-                request=service.Users(users=users),
+                request=users_message,
                 timeout=timeout,
             )
+
+    async def _stream_users_via_sync_user(self, users: list[service.User], timeout: int) -> service.Empty:
+        """Send users via the client-streaming SyncUser RPC to avoid large unary payloads."""
+        try:
+            async with self._client.SyncUser.open(metadata=self._metadata) as stream:
+                for user in users:
+                    await asyncio.wait_for(stream.send_message(user), timeout=self._internal_timeout)
+
+                await stream.end()
+                response = await asyncio.wait_for(stream.recv_message(), timeout=timeout)
+                return response or service.Empty()
+
+        except Exception as e:
+            self._handle_error(e)
 
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users via gRPC SyncUser stream. Returns failed users."""

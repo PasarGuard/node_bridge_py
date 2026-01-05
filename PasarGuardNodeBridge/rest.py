@@ -25,6 +25,8 @@ class Node(PasarGuardNode):
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
+        streaming_threshold: int = 1 * 1024 * 1024,
+        streaming_chunk_size: int = 64 * 1024,
         **kwargs,
     ):
         host_for_url = format_host_for_url(address)
@@ -41,6 +43,8 @@ class Node(PasarGuardNode):
         )
 
         self._node_lock = asyncio.Lock()
+        self._streaming_threshold = max(streaming_threshold, 0)
+        self._streaming_chunk_size = max(streaming_chunk_size, 1)
 
     async def __aenter__(self):
         return self
@@ -79,6 +83,22 @@ class Node(PasarGuardNode):
         else:
             raise NodeAPIError(0, str(error))
 
+    def _should_stream(self, payload: bytes) -> bool:
+        """Decide whether to stream a payload instead of sending it in one chunk."""
+        return len(payload) >= self._streaming_threshold > 0
+
+    def _stream_payload(self, payload: bytes):
+        """Yield payload in small chunks for chunked transfer."""
+
+        async def _gen():
+            view = memoryview(payload)
+            total = len(view)
+            chunk_size = self._streaming_chunk_size
+            for start in range(0, total, chunk_size):
+                yield bytes(view[start : start + chunk_size])
+
+        return _gen()
+
     async def _make_request(
         self,
         method: str,
@@ -91,7 +111,8 @@ class Node(PasarGuardNode):
         request_data = None
 
         if proto_message:
-            request_data = self._serialize_protobuf(proto_message)
+            payload = self._serialize_protobuf(proto_message)
+            request_data = self._stream_payload(payload) if self._should_stream(payload) else payload
 
         try:
             # Convert integer timeout to httpx.Timeout object for explicit timeout configuration
