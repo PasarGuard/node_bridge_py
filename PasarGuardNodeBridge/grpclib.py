@@ -14,6 +14,9 @@ from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
 
+DEFAULT_GRPC_MAX_MESSAGE_BYTES = 4 * 1024 * 1024  # Default gRPC max receive size (4MB)
+
+
 class Node(PasarGuardNode):
     def __init__(
         self,
@@ -35,10 +38,10 @@ class Node(PasarGuardNode):
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
-            # Set max message size to 5MB to handle large node configurations
-            # Default is 4MB which can be exceeded with many users or large configs
+            # Default gRPC max receive size is 4MB; allow override but use this value to size flow-control windows
             if max_message_size is None:
-                max_message_size = 5 * 1024 * 1024  # 5MB
+                max_message_size = DEFAULT_GRPC_MAX_MESSAGE_BYTES
+            self._max_message_size = max_message_size
             self.channel = Channel(
                 host=address,
                 port=port,
@@ -111,9 +114,42 @@ class Node(PasarGuardNode):
         if health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
+        # Build backend payload and check if it fits under the configured gRPC message cap
+        users_to_stream_after_start: list[service.User] = []
         req = service.Backend(
-            type=backend_type, config=config, users=users, keep_alive=keep_alive, exclude_inbounds=exclude_inbounds
+            type=backend_type,
+            config=config,
+            users=users,
+            keep_alive=keep_alive,
+            exclude_inbounds=exclude_inbounds,
         )
+        req_size = req.ByteSize()
+
+        if req_size > self._max_message_size:
+            # Try sending without users and stream them after start to avoid oversized unary payloads
+            users_to_stream_after_start = list(users)
+            original_req_size = req_size
+            req = service.Backend(
+                type=backend_type,
+                config=config,
+                users=[],
+                keep_alive=keep_alive,
+                exclude_inbounds=exclude_inbounds,
+            )
+            req_size = req.ByteSize()
+            if req_size > self._max_message_size:
+                raise NodeAPIError(
+                    code=413,
+                    detail=(
+                        f"Start payload is {req_size} bytes which exceeds gRPC max message size "
+                        f"({self._max_message_size} bytes). Reduce config size or increase server limits."
+                    ),
+                )
+            self.logger.warning(
+                f"[{self.name}] Start payload {original_req_size} bytes exceeds max "
+                f"{self._max_message_size} bytes; sending config-only payload ({req_size} bytes) "
+                f"and streaming {len(users_to_stream_after_start)} user(s) after start"
+            )
 
         async with self._node_lock:
             info: service.BaseInfoResponse = await self._handle_grpc_request(
@@ -127,8 +163,17 @@ class Node(PasarGuardNode):
 
             try:
                 await self.connect(info.node_version, info.core_version)
+                if users_to_stream_after_start:
+                    failed_users = await self._sync_batch_users(users_to_stream_after_start)
+                    if failed_users:
+                        raise NodeAPIError(
+                            500,
+                            f"Failed to sync {len(failed_users)}/{len(users_to_stream_after_start)} users after start",
+                        )
             except Exception as e:
                 await self.disconnect()
+                if isinstance(e, NodeAPIError):
+                    raise
                 self._handle_error(e)
 
             return info
@@ -210,10 +255,26 @@ class Node(PasarGuardNode):
         if flush_pending:
             await self.flush_pending_users()
 
+        users_payload = service.Users(users=users)
+        payload_size = users_payload.ByteSize()
+
         async with self._node_lock:
+            if payload_size > self._max_message_size:
+                self.logger.warning(
+                    f"[{self.name}] SyncUsers payload {payload_size} bytes exceeds max "
+                    f"{self._max_message_size} bytes; using streaming SyncUser instead"
+                )
+                failed_users = await self._sync_batch_users(users)
+                if failed_users:
+                    raise NodeAPIError(
+                        500,
+                        f"Failed to sync {len(failed_users)}/{len(users)} users via streaming",
+                    )
+                return service.Empty()
+
             return await self._handle_grpc_request(
                 method=self._client.SyncUsers,
-                request=service.Users(users=users),
+                request=users_payload,
                 timeout=timeout,
             )
 
