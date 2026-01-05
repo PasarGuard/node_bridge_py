@@ -27,17 +27,25 @@ class Node(PasarGuardNode):
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
+        max_message_size: int | None = None,
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
+            # Default to 10MB if not provided
+            if max_message_size is None:
+                max_message_size = 10 * 1024 * 1024  # 10MB
+            options = {
+                "grpc.max_send_message_length": max_message_size,
+            }
             self.channel = Channel(
                 host=address,
                 port=port,
                 ssl=self.ctx,
                 config=Configuration(_keepalive_timeout=10),
+                options=options,
             )
             self._client = service_grpc.NodeServiceStub(self.channel)
             self._metadata = {"x-api-key": api_key}
