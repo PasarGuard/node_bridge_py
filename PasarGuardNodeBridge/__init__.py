@@ -59,6 +59,9 @@ def create_node(
             - logger (logging.Logger): Custom logger instance. If None, a default logger is created.
             - default_timeout (int): Default timeout in seconds for public API methods. Defaults to 10.
             - internal_timeout (int): Default timeout in seconds for internal operations. Defaults to 15.
+            - max_message_size (int): Maximum gRPC message size in bytes. Defaults to 10MB.
+                                     Can also be set via GRPC_MAX_MESSAGE_SIZE environment variable.
+                                     Set to 0 to use grpclib default (4MB).
 
     Returns:
         PasarGuardNode: An initialized node instance ready for API operations.

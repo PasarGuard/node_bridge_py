@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -27,18 +28,35 @@ class Node(PasarGuardNode):
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
+        max_message_size: int | None = None,
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
-            self.channel = Channel(
-                host=address,
-                port=port,
-                ssl=self.ctx,
-                config=Configuration(_keepalive_timeout=10),
-            )
+            # Set max message size (default: 10MB to handle large node configurations)
+            # Can be overridden via parameter or GRPC_MAX_MESSAGE_SIZE environment variable
+            # Default grpclib limit is 4MB which can be exceeded with many users or large configs
+            if max_message_size is None:
+                max_message_size = int(os.getenv("GRPC_MAX_MESSAGE_SIZE", 10 * 1024 * 1024))  # Default: 10MB
+            
+            # Only set options if max_message_size is greater than 0
+            # 0 means use grpclib default (4MB)
+            channel_kwargs = {
+                "host": address,
+                "port": port,
+                "ssl": self.ctx,
+                "config": Configuration(_keepalive_timeout=10),
+            }
+            
+            if max_message_size > 0:
+                channel_kwargs["options"] = {
+                    "grpc.max_receive_message_length": max_message_size,
+                    "grpc.max_send_message_length": max_message_size,
+                }
+            
+            self.channel = Channel(**channel_kwargs)
             self._client = service_grpc.NodeServiceStub(self.channel)
             self._metadata = {"x-api-key": api_key}
         except Exception as e:
