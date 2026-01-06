@@ -60,6 +60,17 @@ await node.start(
     )
 ```
 
+### Sync Users
+- Use `sync_users` for small updates.
+- Use `sync_users_chunked` for large user lists to stream `UsersChunk` messages over gRPC or REST without overwhelming a single request.
+
+```python
+await node.sync_users(users)
+
+# Large batches
+await node.sync_users_chunked(users, chunk_size=500)
+```
+
 ### Get User Stats
 ```python
 stats = await node.get_user_stats(

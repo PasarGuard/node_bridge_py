@@ -58,6 +58,10 @@ class NodeServiceBase(abc.ABC):
     async def SyncUsers(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.Users, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
         pass
 
+    @abc.abstractmethod
+    async def SyncUsersChunked(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.UsersChunk, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
+        pass
+
     def __mapping__(self) -> typing.Dict[str, grpclib.const.Handler]:
         return {
             '/service.NodeService/Start': grpclib.const.Handler(
@@ -124,6 +128,12 @@ class NodeServiceBase(abc.ABC):
                 self.SyncUsers,
                 grpclib.const.Cardinality.UNARY_UNARY,
                 PasarGuardNodeBridge.common.service_pb2.Users,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
+            ),
+            '/service.NodeService/SyncUsersChunked': grpclib.const.Handler(
+                self.SyncUsersChunked,
+                grpclib.const.Cardinality.STREAM_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.UsersChunk,
                 PasarGuardNodeBridge.common.service_pb2.Empty,
             ),
         }
@@ -196,5 +206,11 @@ class NodeServiceStub:
             channel,
             '/service.NodeService/SyncUsers',
             PasarGuardNodeBridge.common.service_pb2.Users,
+            PasarGuardNodeBridge.common.service_pb2.Empty,
+        )
+        self.SyncUsersChunked = grpclib.client.StreamUnaryMethod(
+            channel,
+            '/service.NodeService/SyncUsersChunked',
+            PasarGuardNodeBridge.common.service_pb2.UsersChunk,
             PasarGuardNodeBridge.common.service_pb2.Empty,
         )

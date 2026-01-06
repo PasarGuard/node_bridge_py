@@ -218,6 +218,49 @@ class Node(PasarGuardNode):
                 timeout=timeout,
             )
 
+    async def sync_users_chunked(
+        self,
+        users: list[service.User],
+        chunk_size: int = 100,
+        flush_pending: bool = False,
+        timeout: int | None = None,
+    ) -> list[service.User]:
+        """Send users via the client-streaming SyncUsersChunked RPC. Returns failed users."""
+        if chunk_size <= 0:
+            raise NodeAPIError(code=-2, detail="chunk_size must be positive")
+
+        timeout = timeout or self._default_timeout
+        if flush_pending:
+            await self.flush_pending_users()
+
+        async with self._node_lock:
+            try:
+                async with self._client.SyncUsersChunked.open(metadata=self._metadata) as stream:
+                    if not users:
+                        await asyncio.wait_for(
+                            stream.send_message(service.UsersChunk(index=0, last=True)),
+                            timeout=self._internal_timeout,
+                        )
+                    else:
+                        total_users = len(users)
+                        for index, start in enumerate(range(0, total_users, chunk_size)):
+                            chunk_users = users[start : start + chunk_size]
+                            is_last = start + chunk_size >= total_users
+                            await asyncio.wait_for(
+                                stream.send_message(service.UsersChunk(users=chunk_users, index=index, last=is_last)),
+                                timeout=self._internal_timeout,
+                            )
+
+                    await stream.end()
+                    await asyncio.wait_for(stream.recv_message(), timeout=timeout)
+                    return []
+            except Exception as e:
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"[{self.name}] Chunked gRPC sync failed for {len(users)} user(s) | Error: {error_type} - {str(e)}"
+                )
+                return users
+
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users via gRPC SyncUser stream. Returns failed users."""
         failed = []

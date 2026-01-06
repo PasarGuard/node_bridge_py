@@ -235,6 +235,68 @@ class Node(PasarGuardNode):
                 proto_response_class=service.Empty,
             )
 
+    async def sync_users_chunked(
+        self,
+        users: list[service.User],
+        chunk_size: int = 100,
+        flush_pending: bool = False,
+        timeout: int | None = None,
+    ) -> list[service.User]:
+        """Stream UsersChunk messages over HTTP/2 for large sync operations. Returns failed users."""
+        if chunk_size <= 0:
+            raise NodeAPIError(code=-2, detail="chunk_size must be positive")
+
+        timeout = timeout or self._default_timeout
+        if flush_pending:
+            await self.flush_pending_users()
+
+        def _encode_varint(value: int) -> bytes:
+            encoded = bytearray()
+            while True:
+                to_write = value & 0x7F
+                value >>= 7
+                if value:
+                    encoded.append(to_write | 0x80)
+                else:
+                    encoded.append(to_write)
+                    break
+            return bytes(encoded)
+
+        async def _iter_chunks():
+            # Send a terminating empty chunk when no users are provided
+            if not users:
+                chunk_bytes = self._serialize_protobuf(service.UsersChunk(index=0, last=True))
+                yield _encode_varint(len(chunk_bytes)) + chunk_bytes
+                return
+
+            total_users = len(users)
+            for index, start in enumerate(range(0, total_users, chunk_size)):
+                chunk_users = users[start : start + chunk_size]
+                chunk_bytes = self._serialize_protobuf(
+                    service.UsersChunk(users=chunk_users, index=index, last=start + chunk_size >= total_users)
+                )
+                # Length-prefix each protobuf chunk to preserve framing server-side
+                yield _encode_varint(len(chunk_bytes)) + chunk_bytes
+
+        async with self._node_lock:
+            try:
+                async with self._client.stream(
+                    method="PUT",
+                    url="users/sync/chunked",
+                    content=_iter_chunks(),
+                    timeout=httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout),
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.aread()
+                    self._deserialize_protobuf(service.Empty, data)
+                    return []
+            except Exception as e:
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {str(e)}"
+                )
+                return users
+
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users individually via PUT user/sync. Returns failed users."""
         failed = []

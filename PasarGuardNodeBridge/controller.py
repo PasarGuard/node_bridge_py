@@ -3,6 +3,7 @@ import logging
 import ssl
 from enum import IntEnum
 from json import JSONDecodeError
+import math
 from typing import Optional
 from uuid import UUID
 
@@ -400,32 +401,58 @@ class Controller:
                 if not users:
                     continue
 
-                # Batch sync users individually
-                try:
-                    failed_users = await self._sync_batch_users(users)
+                # Prefer chunked sync for large batches to reduce per-request overhead
+                use_chunked = len(users) >= 1000
+                if use_chunked:
+                    # Aim for ~10 chunks, cap size to 2000 to stay under server limits
+                    chunk_size = min(2000, max(1, math.ceil(len(users) / 10)))
+                    failed_users = await self.sync_users_chunked(
+                        users=users, chunk_size=chunk_size, flush_pending=False, timeout=self._internal_timeout
+                    )
                     if failed_users:
-                        self.logger.warning(f"[{self.name}] {len(failed_users)}/{len(users)} users failed to sync")
+                        self.logger.warning(
+                            f"[{self.name}] {len(failed_users)}/{len(users)} users failed to chunk-sync "
+                            f"(chunk_size={chunk_size})"
+                        )
                         await self._requeue_failed_users(failed_users)
                         await self._increment_user_sync_failure()
-                        # Exponential backoff on partial failure
                         await asyncio.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, max_retry_delay)
                     else:
-                        self.logger.debug(f"[{self.name}] Synced {len(users)} user(s)")
+                        self.logger.debug(
+                            f"[{self.name}] Chunk-synced {len(users)} user(s) with chunk_size={chunk_size}"
+                        )
                         await self._reset_user_sync_failure_count()
-                        retry_delay = 1.0  # Reset retry delay on success
+                        retry_delay = 1.0
+                else:
+                    # Batch sync users individually
+                    try:
+                        failed_users = await self._sync_batch_users(users)
+                        if failed_users:
+                            self.logger.warning(
+                                f"[{self.name}] {len(failed_users)}/{len(users)} users failed to sync"
+                            )
+                            await self._requeue_failed_users(failed_users)
+                            await self._increment_user_sync_failure()
+                            # Exponential backoff on partial failure
+                            await asyncio.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 2, max_retry_delay)
+                        else:
+                            self.logger.debug(f"[{self.name}] Synced {len(users)} user(s)")
+                            await self._reset_user_sync_failure_count()
+                            retry_delay = 1.0  # Reset retry delay on success
 
-                except Exception as e:
-                    error_type = type(e).__name__
-                    self.logger.warning(
-                        f"[{self.name}] Batch sync failed for {len(users)} user(s), requeuing | "
-                        f"Error: {error_type} - {str(e)}"
-                    )
-                    await self._increment_user_sync_failure()
-                    await self._requeue_failed_users(users)
-                    # Exponential backoff on failure
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, max_retry_delay)
+                    except Exception as e:
+                        error_type = type(e).__name__
+                        self.logger.warning(
+                            f"[{self.name}] Batch sync failed for {len(users)} user(s), requeuing | "
+                            f"Error: {error_type} - {str(e)}"
+                        )
+                        await self._increment_user_sync_failure()
+                        await self._requeue_failed_users(users)
+                        # Exponential backoff on failure
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_retry_delay)
 
         except asyncio.CancelledError:
             self.logger.debug(f"[{self.name}] Sync worker cancelled")

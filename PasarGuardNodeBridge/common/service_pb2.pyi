@@ -207,3 +207,13 @@ class Users(_message.Message):
     USERS_FIELD_NUMBER: _ClassVar[int]
     users: _containers.RepeatedCompositeFieldContainer[User]
     def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ...) -> None: ...
+
+class UsersChunk(_message.Message):
+    __slots__ = ("users", "index", "last")
+    USERS_FIELD_NUMBER: _ClassVar[int]
+    INDEX_FIELD_NUMBER: _ClassVar[int]
+    LAST_FIELD_NUMBER: _ClassVar[int]
+    users: _containers.RepeatedCompositeFieldContainer[User]
+    index: int
+    last: bool
+    def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., index: _Optional[int] = ..., last: bool = ...) -> None: ...
