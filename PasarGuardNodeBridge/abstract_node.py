@@ -58,6 +58,12 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def sync_users_chunked(
+        self, users: list[service.User], chunk_size: int, flush_pending: bool, timeout: int | None
+    ) -> list[service.User]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def _check_node_health(self):
         raise NotImplementedError
 
