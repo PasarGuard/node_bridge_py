@@ -1,6 +1,6 @@
 [project]
 name = "pasarguard-node-bridge"
-version = "0.4.0"
+version = "0.4.1"
 description = "python package to connect your project with PasarGuard node go"
 url = "https://github.com/PasarGuard/node_bridge_py"
 keywords = [

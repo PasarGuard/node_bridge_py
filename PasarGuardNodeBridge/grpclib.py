@@ -35,11 +35,11 @@ class Node(PasarGuardNode):
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         try:
-            # Set HTTP/2 window sizes to 10MB to handle large node configurations
+            # Set HTTP/2 window sizes to 64MB to handle large node configurations
             # Default is 4MB which can be exceeded with many users or large configs
             # http2_connection_window_size and http2_stream_window_size control max message size
             if max_message_size is None:
-                max_message_size = 10 * 1024 * 1024  # 10MB
+                max_message_size = 64 * 1024 * 1024  # 64MB
             self._max_message_size = max_message_size
             self.channel = Channel(
                 host=address,
