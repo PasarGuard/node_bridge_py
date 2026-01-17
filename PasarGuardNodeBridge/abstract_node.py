@@ -16,6 +16,11 @@ class PasarGuardNode(Controller, ABC):
         keep_alive: int,
         exclude_inbounds: list[str],
         timeout: int | None,
+        # Limit enforcer configuration (optional)
+        node_id: int = 0,
+        panel_api_url: str = "",
+        limit_check_interval: int = 30,
+        limit_refresh_interval: int = 60,
     ) -> service.BaseInfoResponse | None:
         raise NotImplementedError
 

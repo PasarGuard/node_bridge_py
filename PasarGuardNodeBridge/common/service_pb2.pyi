@@ -42,18 +42,26 @@ class BaseInfoResponse(_message.Message):
     def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ...) -> None: ...
 
 class Backend(_message.Message):
-    __slots__ = ("type", "config", "users", "keep_alive", "exclude_inbounds")
+    __slots__ = ("type", "config", "users", "keep_alive", "exclude_inbounds", "node_id", "panel_api_url", "limit_check_interval", "limit_refresh_interval")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     USERS_FIELD_NUMBER: _ClassVar[int]
     KEEP_ALIVE_FIELD_NUMBER: _ClassVar[int]
     EXCLUDE_INBOUNDS_FIELD_NUMBER: _ClassVar[int]
+    NODE_ID_FIELD_NUMBER: _ClassVar[int]
+    PANEL_API_URL_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_CHECK_INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_REFRESH_INTERVAL_FIELD_NUMBER: _ClassVar[int]
     type: BackendType
     config: str
     users: _containers.RepeatedCompositeFieldContainer[User]
     keep_alive: int
     exclude_inbounds: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ..., exclude_inbounds: _Optional[_Iterable[str]] = ...) -> None: ...
+    node_id: int
+    panel_api_url: str
+    limit_check_interval: int
+    limit_refresh_interval: int
+    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ..., exclude_inbounds: _Optional[_Iterable[str]] = ..., node_id: _Optional[int] = ..., panel_api_url: _Optional[str] = ..., limit_check_interval: _Optional[int] = ..., limit_refresh_interval: _Optional[int] = ...) -> None: ...
 
 class Log(_message.Message):
     __slots__ = ("detail",)

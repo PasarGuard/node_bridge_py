@@ -105,6 +105,11 @@ class Node(PasarGuardNode):
         keep_alive: int = 0,
         exclude_inbounds: list[str] = [],
         timeout: int | None = None,
+        # Limit enforcer configuration (optional - sent to node for real-time enforcement)
+        node_id: int = 0,
+        panel_api_url: str = "",
+        limit_check_interval: int = 30,
+        limit_refresh_interval: int = 60,
     ) -> service.BaseInfoResponse | None:
         """Start the node with proper task management"""
         timeout = timeout or self._default_timeout
@@ -113,7 +118,15 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-4, detail="Invalid node")
 
         req = service.Backend(
-            type=backend_type, config=config, users=users, keep_alive=keep_alive, exclude_inbounds=exclude_inbounds
+            type=backend_type,
+            config=config,
+            users=users,
+            keep_alive=keep_alive,
+            exclude_inbounds=exclude_inbounds,
+            node_id=node_id,
+            panel_api_url=panel_api_url,
+            limit_check_interval=limit_check_interval,
+            limit_refresh_interval=limit_refresh_interval,
         )
 
         async with self._node_lock:
