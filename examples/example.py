@@ -2,6 +2,7 @@ import asyncio
 from logging import getLogger, DEBUG, StreamHandler, Formatter
 
 import PasarGuardNodeBridge as Bridge
+from PasarGuardNodeBridge.common import service_pb2 as service
 
 address = "172.27.158.135"
 port = 2096
@@ -45,13 +46,23 @@ async def main():
     )
 
     # Start the node with custom timeout override (60s instead of instance default 15s)
-    await node.start(config=config, backend_type=0, users=[], timeout=60)
+    await node.start(config=config, backend_type=service.BackendType.XRAY, users=[], timeout=60)
 
     user = Bridge.create_user(
         email="jeff", proxies=Bridge.create_proxy(vmess_id="0d59268a-9847-4218-ae09-65308eb52e08"), inbounds=[]
     )
 
+    wireguard_user = Bridge.create_user(
+        email="wireguard@example.com",
+        proxies=Bridge.create_proxy(
+            wireguard_public_key="wireguard-public-key",
+            wireguard_peer_ips=["10.10.0.2/32", "fd00::2/128"],
+        ),
+        inbounds=[],
+    )
+
     await node.update_user(user)
+    await node.update_user(wireguard_user)
 
     # Example: Call with instance default timeout (15s)
     try:

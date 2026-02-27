@@ -2,7 +2,15 @@ from grpclib.const import Status
 from http import HTTPStatus
 from ipaddress import ip_address
 
-from PasarGuardNodeBridge.common.service_pb2 import User, Proxy, Vmess, Vless, Trojan, Shadowsocks
+from PasarGuardNodeBridge.common.service_pb2 import (
+    Proxy,
+    Shadowsocks,
+    Trojan,
+    User,
+    Vless,
+    Vmess,
+    Wireguard,
+)
 
 
 def create_user(email: str, proxies: Proxy, inbounds: list[str]) -> User:
@@ -16,12 +24,18 @@ def create_proxy(
     trojan_password: str | None = None,
     shadowsocks_password: str | None = None,
     shadowsocks_method: str | None = None,
+    wireguard_public_key: str | None = None,
+    wireguard_peer_ips: list[str] | None = None,
 ) -> Proxy:
+    if wireguard_peer_ips is None:
+        wireguard_peer_ips = []
+
     return Proxy(
         vmess=Vmess(id=vmess_id),
         vless=Vless(id=vless_id, flow=vless_flow),
         trojan=Trojan(password=trojan_password),
         shadowsocks=Shadowsocks(password=shadowsocks_password, method=shadowsocks_method),
+        wireguard=Wireguard(public_key=wireguard_public_key, peer_ips=wireguard_peer_ips),
     )
 
 

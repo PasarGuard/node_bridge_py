@@ -1,5 +1,5 @@
 generate_grpc_code:
-	uv run python3 -m grpc_tools.protoc \
+	uv run -m grpc_tools.protoc \
 		-I. \
 		--python_out=. \
 		--pyi_out=. \

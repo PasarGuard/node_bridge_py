@@ -10,6 +10,7 @@ DESCRIPTOR: _descriptor.FileDescriptor
 class BackendType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     XRAY: _ClassVar[BackendType]
+    WIREGUARD: _ClassVar[BackendType]
 
 class StatType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -20,6 +21,7 @@ class StatType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UsersStat: _ClassVar[StatType]
     UserStat: _ClassVar[StatType]
 XRAY: BackendType
+WIREGUARD: BackendType
 Outbounds: StatType
 Outbound: StatType
 Inbounds: StatType
@@ -180,17 +182,27 @@ class Shadowsocks(_message.Message):
     method: str
     def __init__(self, password: _Optional[str] = ..., method: _Optional[str] = ...) -> None: ...
 
+class Wireguard(_message.Message):
+    __slots__ = ("public_key", "peer_ips")
+    PUBLIC_KEY_FIELD_NUMBER: _ClassVar[int]
+    PEER_IPS_FIELD_NUMBER: _ClassVar[int]
+    public_key: str
+    peer_ips: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, public_key: _Optional[str] = ..., peer_ips: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class Proxy(_message.Message):
-    __slots__ = ("vmess", "vless", "trojan", "shadowsocks")
+    __slots__ = ("vmess", "vless", "trojan", "shadowsocks", "wireguard")
     VMESS_FIELD_NUMBER: _ClassVar[int]
     VLESS_FIELD_NUMBER: _ClassVar[int]
     TROJAN_FIELD_NUMBER: _ClassVar[int]
     SHADOWSOCKS_FIELD_NUMBER: _ClassVar[int]
+    WIREGUARD_FIELD_NUMBER: _ClassVar[int]
     vmess: Vmess
     vless: Vless
     trojan: Trojan
     shadowsocks: Shadowsocks
-    def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ...) -> None: ...
+    wireguard: Wireguard
+    def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ..., wireguard: _Optional[_Union[Wireguard, _Mapping]] = ...) -> None: ...
 
 class User(_message.Message):
     __slots__ = ("email", "proxies", "inbounds")
