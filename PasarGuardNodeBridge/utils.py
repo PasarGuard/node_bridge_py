@@ -1,8 +1,10 @@
-from grpclib.const import Status
 from http import HTTPStatus
 from ipaddress import ip_address
 
+from grpclib.const import Status
+
 from PasarGuardNodeBridge.common.service_pb2 import (
+    Hysteria,
     Proxy,
     Shadowsocks,
     Trojan,
@@ -26,6 +28,7 @@ def create_proxy(
     shadowsocks_method: str | None = None,
     wireguard_public_key: str | None = None,
     wireguard_peer_ips: list[str] | None = None,
+    hysteria_auth: str | None = None,
 ) -> Proxy:
     if wireguard_peer_ips is None:
         wireguard_peer_ips = []
@@ -36,6 +39,7 @@ def create_proxy(
         trojan=Trojan(password=trojan_password),
         shadowsocks=Shadowsocks(password=shadowsocks_password, method=shadowsocks_method),
         wireguard=Wireguard(public_key=wireguard_public_key, peer_ips=wireguard_peer_ips),
+        hysteria=Hysteria(auth=hysteria_auth),
     )
 
 
