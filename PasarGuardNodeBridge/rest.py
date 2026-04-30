@@ -3,10 +3,11 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-import httpx
+import aiohttp
 from google.protobuf.message import DecodeError, Message
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
+from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientSession, buffer_response, make_timeout
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.utils import format_host_for_url
@@ -32,12 +33,11 @@ class Node(PasarGuardNode):
         super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
 
         url = f"https://{host_for_url}:{port}/"
-        self._client = httpx.AsyncClient(
-            http2=True,
-            verify=self.ctx,
+        self._client = LazyClientSession(
+            ssl_context=self.ctx,
             headers={"Content-Type": "application/x-protobuf", "x-api-key": api_key},
             base_url=url,
-            timeout=httpx.Timeout(None),
+            timeout=make_timeout(None),
         )
 
         self._node_lock = asyncio.Lock()
@@ -47,7 +47,8 @@ class Node(PasarGuardNode):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
-        await self._client.aclose()
+        await self._client.close()
+        await self._json_client.close()
 
     def _serialize_protobuf(self, proto_message: Message) -> bytes:
         """Serialize a protobuf message to bytes."""
@@ -63,19 +64,21 @@ class Node(PasarGuardNode):
         return proto_instance
 
     def _handle_error(self, error: Exception):
-        if isinstance(error, httpx.RemoteProtocolError):
+        if isinstance(error, aiohttp.ServerDisconnectedError):
             raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
-        elif isinstance(error, httpx.ConnectError):
+        elif isinstance(error, aiohttp.ClientConnectorError):
             # Connection errors (connection refused, DNS errors, etc.) are NOT timeouts
             raise NodeAPIError(code=-2, detail=f"Connection error: {error}")
-        elif isinstance(error, httpx.NetworkError):
-            # Other network errors (not connection errors or timeouts) are NOT timeouts
-            raise NodeAPIError(code=-2, detail=f"Network error: {error}")
-        elif isinstance(error, httpx.TimeoutException):
+        elif isinstance(error, (aiohttp.ServerTimeoutError, asyncio.TimeoutError)):
             # Only actual timeouts should be classified as timeout errors
             raise NodeAPIError(code=-1, detail=f"Timeout error: {error}")
-        elif isinstance(error, httpx.HTTPStatusError):
+        elif isinstance(error, aiohttp.ClientConnectionError):
+            # Other network errors (not connection errors or timeouts) are NOT timeouts
+            raise NodeAPIError(code=-2, detail=f"Network error: {error}")
+        elif isinstance(error, BufferedStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
+        elif isinstance(error, aiohttp.ClientResponseError):
+            raise NodeAPIError(code=error.status, detail=f"HTTP error: {error.message}")
         else:
             raise NodeAPIError(0, str(error))
 
@@ -94,15 +97,10 @@ class Node(PasarGuardNode):
             request_data = self._serialize_protobuf(proto_message)
 
         try:
-            # Convert integer timeout to httpx.Timeout object for explicit timeout configuration
-            # This ensures connection, read, and write timeouts are all set properly
-            httpx_timeout = httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout)
-            response = await self._client.request(
-                method=method,
-                url=endpoint,
-                content=request_data,
-                timeout=httpx_timeout,
-            )
+            async with self._client.request(
+                method=method, url=endpoint, data=request_data, timeout=make_timeout(timeout)
+            ) as raw_response:
+                response = await buffer_response(raw_response)
             response.raise_for_status()
 
             if proto_response_class:
@@ -280,14 +278,15 @@ class Node(PasarGuardNode):
 
         async with self._node_lock:
             try:
-                async with self._client.stream(
+                async with self._client.request(
                     method="PUT",
                     url="users/sync/chunked",
-                    content=_iter_chunks(),
-                    timeout=httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout),
-                ) as response:
+                    data=_iter_chunks(),
+                    timeout=make_timeout(timeout),
+                ) as raw_response:
+                    response = await buffer_response(raw_response)
                     response.raise_for_status()
-                    data = await response.aread()
+                    data = response.content
                     self._deserialize_protobuf(service.Empty, data)
                     return []
             except Exception as e:
@@ -420,7 +419,7 @@ class Node(PasarGuardNode):
             """Receive log messages from HTTP stream and put them in the queue."""
             try:
                 buffer = b""
-                async for chunk in response.aiter_bytes():
+                async for chunk in response.content.iter_any():
                     buffer += chunk
 
                     while b"\n" in buffer:
@@ -440,7 +439,7 @@ class Node(PasarGuardNode):
             except asyncio.CancelledError:
                 self.logger.debug(f"[{self.name}] Log stream receive task cancelled")
                 raise
-            except (httpx.ReadError, httpx.RemoteProtocolError) as e:
+            except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as e:
                 # Stream was closed intentionally, this is expected during cleanup
                 self.logger.debug(f"[{self.name}] Log stream closed: {type(e).__name__}")
             except Exception as e:
@@ -460,7 +459,10 @@ class Node(PasarGuardNode):
         response = None
         try:
             self.logger.debug(f"[{self.name}] Opening on-demand log stream")
-            response = await self._client.stream("GET", "/logs", timeout=None).__aenter__()
+            response = await self._client.get("/logs", timeout=make_timeout(None))
+            if response.status >= 400:
+                buffered_response = await buffer_response(response)
+                buffered_response.raise_for_status()
             self.logger.debug(f"[{self.name}] On-demand log stream opened successfully")
 
             # Start background task to receive logs
@@ -476,10 +478,10 @@ class Node(PasarGuardNode):
                     if exc and not isinstance(exc, asyncio.CancelledError):
                         self._handle_error(exc)
             finally:
-                # Cleanup: Close HTTP stream first to interrupt aiter_bytes()
+                # Cleanup: Close HTTP stream first to interrupt the content iterator.
                 if response is not None:
                     try:
-                        await response.aclose()
+                        response.close()
                     except Exception:
                         pass
 

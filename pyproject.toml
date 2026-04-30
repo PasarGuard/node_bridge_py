@@ -13,10 +13,10 @@ keywords = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "grpclib>=0.4.8",
-    "httpx>=0.28.1",
-    "packaging>=23.1",
-    "protobuf>=6.31.1",
+    "aiohttp>=3.13.5",
+    "grpclib>=0.4.9",
+    "packaging>=26.2",
+    "protobuf>=6.33.6",
 ]
 
 classifiers = ["Programming Language :: Python :: 3.12"]
@@ -26,7 +26,7 @@ Homepage = "https://github.com/PasarGuard/node_bridge_py"
 Repository = "https://github.com/PasarGuard/node_bridge_py.git"
 
 [dependency-groups]
-dev = ["grpcio-tools>=1.73.1"]
+dev = ["grpcio-tools>=1.80.0"]
 
 [tool.ruff]
 line-length = 120
