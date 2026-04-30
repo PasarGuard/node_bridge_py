@@ -1,5 +1,5 @@
 import asyncio
-from logging import getLogger, DEBUG, StreamHandler, Formatter
+from logging import DEBUG, Formatter, StreamHandler, getLogger
 
 import PasarGuardNodeBridge as Bridge
 from PasarGuardNodeBridge.common import service_pb2 as service

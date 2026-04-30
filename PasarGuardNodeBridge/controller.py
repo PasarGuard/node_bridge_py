@@ -7,9 +7,16 @@ from json import JSONDecodeError
 from typing import Optional
 from uuid import UUID
 
-import httpx
+import aiohttp
 from packaging.version import InvalidVersion, Version
 
+from PasarGuardNodeBridge.aiohttp_compat import (
+    BufferedResponse,
+    BufferedStatusError,
+    LazyClientSession,
+    buffer_response,
+    make_timeout,
+)
 from PasarGuardNodeBridge.common.service_pb2 import User
 
 # Default timeout configuration (module-level constants)
@@ -100,15 +107,11 @@ class Controller:
 
         self._shutdown_event = asyncio.Event()
 
-        httpx_timeout = httpx.Timeout(
-            default_timeout, connect=default_timeout, read=default_timeout, write=default_timeout
-        )
-        self._json_client = httpx.AsyncClient(
-            http2=True,
-            verify=self.ctx,
+        self._json_client = LazyClientSession(
+            ssl_context=self.ctx,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             base_url=service_url,
-            timeout=httpx_timeout,
+            timeout=make_timeout(default_timeout),
         )
 
     async def set_health(self, health: Health):
@@ -504,22 +507,20 @@ class Controller:
         endpoint: str,
         timeout: Optional[int] = None,
         json: Optional[dict] = None,
-    ) -> httpx.Response:
+    ) -> BufferedResponse:
         """Make an HTTP request to the node's REST API."""
         if timeout is None:
             timeout = self._default_timeout
 
         try:
-            response = await self._json_client.request(
-                method=method,
-                url=endpoint,
-                json=json,
-                timeout=httpx.Timeout(timeout, connect=timeout, read=timeout, write=timeout),
-            )
+            async with self._json_client.request(
+                method=method, url=endpoint, json=json, timeout=make_timeout(timeout)
+            ) as raw_response:
+                response = await buffer_response(raw_response)
             response.raise_for_status()
             return response
 
-        except httpx.HTTPStatusError as e:
+        except BufferedStatusError as e:
             detail = ""
             try:
                 data = e.response.json()
@@ -532,7 +533,7 @@ class Controller:
 
             raise NodeAPIError(code=e.response.status_code, detail=detail) from e
 
-        except httpx.RequestError as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             raise NodeAPIError(code=-5, detail=f"Request error: {str(e)}") from e
 
     async def check_connectivity(self) -> bool:
@@ -544,7 +545,7 @@ class Controller:
             self.logger.error(f"[{self.name}] Connectivity check failed: {str(e)}")
             return False
 
-    async def update_node(self) -> httpx.Response:
+    async def update_node(self) -> BufferedResponse:
         """Trigger a node update via the REST API."""
 
         if not (await self.check_connectivity()):
@@ -552,7 +553,7 @@ class Controller:
         response = await self._make_json_request(method="POST", endpoint="/node/update")
         return response
 
-    async def update_core(self, json: dict) -> httpx.Response:
+    async def update_core(self, json: dict) -> BufferedResponse:
         """Trigger a node core update via the REST API."""
 
         if not (await self.check_connectivity()):
@@ -560,7 +561,7 @@ class Controller:
         response = await self._make_json_request(method="POST", endpoint="/node/core_update", json=json)
         return response
 
-    async def update_geofiles(self, json: dict) -> httpx.Response:
+    async def update_geofiles(self, json: dict) -> BufferedResponse:
         """Trigger a node geofiles update via the REST API."""
 
         if not (await self.check_connectivity()):
