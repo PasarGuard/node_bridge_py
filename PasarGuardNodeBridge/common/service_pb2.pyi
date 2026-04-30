@@ -139,20 +139,22 @@ class BackendStatsResponse(_message.Message):
     def __init__(self, num_goroutine: _Optional[int] = ..., num_gc: _Optional[int] = ..., alloc: _Optional[int] = ..., total_alloc: _Optional[int] = ..., sys: _Optional[int] = ..., mallocs: _Optional[int] = ..., frees: _Optional[int] = ..., live_objects: _Optional[int] = ..., pause_total_ns: _Optional[int] = ..., uptime: _Optional[int] = ...) -> None: ...
 
 class SystemStatsResponse(_message.Message):
-    __slots__ = ("mem_total", "mem_used", "cpu_cores", "cpu_usage", "incoming_bandwidth_speed", "outgoing_bandwidth_speed")
+    __slots__ = ("mem_total", "mem_used", "cpu_cores", "cpu_usage", "incoming_bandwidth_speed", "outgoing_bandwidth_speed", "uptime")
     MEM_TOTAL_FIELD_NUMBER: _ClassVar[int]
     MEM_USED_FIELD_NUMBER: _ClassVar[int]
     CPU_CORES_FIELD_NUMBER: _ClassVar[int]
     CPU_USAGE_FIELD_NUMBER: _ClassVar[int]
     INCOMING_BANDWIDTH_SPEED_FIELD_NUMBER: _ClassVar[int]
     OUTGOING_BANDWIDTH_SPEED_FIELD_NUMBER: _ClassVar[int]
+    UPTIME_FIELD_NUMBER: _ClassVar[int]
     mem_total: int
     mem_used: int
     cpu_cores: int
     cpu_usage: float
     incoming_bandwidth_speed: int
     outgoing_bandwidth_speed: int
-    def __init__(self, mem_total: _Optional[int] = ..., mem_used: _Optional[int] = ..., cpu_cores: _Optional[int] = ..., cpu_usage: _Optional[float] = ..., incoming_bandwidth_speed: _Optional[int] = ..., outgoing_bandwidth_speed: _Optional[int] = ...) -> None: ...
+    uptime: int
+    def __init__(self, mem_total: _Optional[int] = ..., mem_used: _Optional[int] = ..., cpu_cores: _Optional[int] = ..., cpu_usage: _Optional[float] = ..., incoming_bandwidth_speed: _Optional[int] = ..., outgoing_bandwidth_speed: _Optional[int] = ..., uptime: _Optional[int] = ...) -> None: ...
 
 class Vmess(_message.Message):
     __slots__ = ("id",)
