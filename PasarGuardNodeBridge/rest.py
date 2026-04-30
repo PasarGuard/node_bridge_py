@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncGenerator, TypeVar, overload
 
 import aiohttp
 from google.protobuf.message import DecodeError, Message
@@ -11,6 +11,8 @@ from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientS
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.utils import format_host_for_url
+
+ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
 
 
 class Node(PasarGuardNode):
@@ -54,7 +56,7 @@ class Node(PasarGuardNode):
         """Serialize a protobuf message to bytes."""
         return proto_message.SerializeToString()
 
-    def _deserialize_protobuf(self, proto_class: type[Message], data: bytes) -> Message:
+    def _deserialize_protobuf(self, proto_class: type[ProtoMessageT], data: bytes) -> ProtoMessageT:
         """Deserialize bytes into a protobuf message."""
         proto_instance = proto_class()
         try:
@@ -63,7 +65,7 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-2, detail=f"Error deserialising protobuf: {e}")
         return proto_instance
 
-    def _handle_error(self, error: Exception):
+    def _handle_error(self, error: BaseException):
         if isinstance(error, aiohttp.ServerDisconnectedError):
             raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
         elif isinstance(error, aiohttp.ClientConnectorError):
@@ -82,14 +84,44 @@ class Node(PasarGuardNode):
         else:
             raise NodeAPIError(0, str(error))
 
+    @overload
     async def _make_request(
         self,
         method: str,
         endpoint: str,
         timeout: int,
-        proto_message: Message = None,
-        proto_response_class: type[Message] = None,
-    ) -> Message:
+        *,
+        proto_response_class: type[ProtoMessageT],
+    ) -> ProtoMessageT: ...
+
+    @overload
+    async def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        timeout: int,
+        proto_message: Message | None,
+        proto_response_class: type[ProtoMessageT],
+    ) -> ProtoMessageT: ...
+
+    @overload
+    async def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        timeout: int,
+        proto_message: Message | None = None,
+        proto_response_class: None = None,
+    ) -> bytes: ...
+
+    async def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        timeout: int,
+        proto_message: Message | None = None,
+        proto_response_class: type[ProtoMessageT] | None = None,
+    ) -> ProtoMessageT | bytes:
         """Handle common REST API call logic with protobuf support (async)."""
         request_data = None
 
@@ -109,6 +141,7 @@ class Node(PasarGuardNode):
 
         except Exception as e:
             self._handle_error(e)
+            raise AssertionError("unreachable")
 
     async def start(
         self,
@@ -118,7 +151,7 @@ class Node(PasarGuardNode):
         keep_alive: int = 0,
         exclude_inbounds: list[str] = [],
         timeout: int | None = None,
-    ):
+    ) -> service.BaseInfoResponse | None:
         """Start the node with proper task management"""
         timeout = timeout or self._default_timeout
         health = await self.get_health()
@@ -126,7 +159,7 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-4, detail="Invalid node")
 
         async with self._node_lock:
-            response: service.BaseInfoResponse = await self._make_request(
+            response = await self._make_request(
                 method="POST",
                 endpoint="start",
                 timeout=timeout,
@@ -145,7 +178,7 @@ class Node(PasarGuardNode):
 
             try:
                 await self.connect(response.node_version, response.core_version)
-            except Exception as e:
+            except BaseException as e:
                 await self.disconnect()
                 self._handle_error(e)
 
@@ -154,16 +187,20 @@ class Node(PasarGuardNode):
     async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
         timeout = timeout or self._default_timeout
-        if await self.get_health() is Health.NOT_CONNECTED:
-            return
+        try:
+            if await self.get_health() is Health.NOT_CONNECTED:
+                return
 
-        async with self._node_lock:
-            await self.disconnect()
+            async with self._node_lock:
+                await self.disconnect()
 
-            try:
-                await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
-            except Exception:
-                pass
+                try:
+                    await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
+                except Exception:
+                    pass
+        finally:
+            await self._client.close()
+            await self._json_client.close()
 
     async def info(self, timeout: int | None = None) -> service.BaseInfoResponse | None:
         timeout = timeout or self._default_timeout
@@ -379,7 +416,7 @@ class Node(PasarGuardNode):
             self.logger.debug(f"[{self.name}] Health check task finished")
 
     @asynccontextmanager
-    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[asyncio.Queue]:
+    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncGenerator[asyncio.Queue[str | NodeAPIError], None]:
         """Context manager for streaming logs on-demand.
 
         Yields a queue that receives log messages in real-time.
@@ -413,9 +450,9 @@ class Node(PasarGuardNode):
                 # Reconnect or handle error
         """
         log_queue: asyncio.Queue[str | NodeAPIError] = asyncio.Queue(maxsize=max_queue_size)
-        stream_task = None
+        stream_task: asyncio.Task[None] | None = None
 
-        async def _receive_logs(response):
+        async def _receive_logs(response: aiohttp.ClientResponse) -> None:
             """Receive log messages from HTTP stream and put them in the queue."""
             try:
                 buffer = b""

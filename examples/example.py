@@ -71,7 +71,7 @@ async def main():
         print(f"Expected error for non-existent user: {e.code}")
 
     # Example: Call with instance default timeout (15s)
-    stats = await node.get_stats(0)
+    stats = await node.get_stats(service.StatType.Inbounds)
     print(f"Stats: {stats}")
 
     await asyncio.sleep(5)

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncGenerator
 
 from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
@@ -76,7 +76,7 @@ class Node(PasarGuardNode):
     def __del__(self):
         self._close_chan()
 
-    def _handle_error(self, error: Exception):
+    def _handle_error(self, error: BaseException):
         """Convert gRPC errors to NodeAPIError with HTTP status codes."""
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(-1, "Request timed out")
@@ -137,20 +137,23 @@ class Node(PasarGuardNode):
     async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
         timeout = timeout or self._default_timeout
-        if await self.get_health() is Health.NOT_CONNECTED:
-            return
+        try:
+            if await self.get_health() is Health.NOT_CONNECTED:
+                return
 
-        async with self._node_lock:
-            await self.disconnect()
+            async with self._node_lock:
+                await self.disconnect()
 
-            try:
-                await self._handle_grpc_request(
-                    method=self._client.Stop,
-                    request=service.Empty(),
-                    timeout=timeout,
-                )
-            except Exception:
-                pass
+                try:
+                    await self._handle_grpc_request(
+                        method=self._client.Stop,
+                        request=service.Empty(),
+                        timeout=timeout,
+                    )
+                except Exception:
+                    pass
+        finally:
+            await self._json_client.close()
 
     async def info(self, timeout: int | None = None) -> service.BaseInfoResponse | None:
         timeout = timeout or self._default_timeout
@@ -348,7 +351,7 @@ class Node(PasarGuardNode):
             self.logger.debug(f"[{self.name}] Health check task finished")
 
     @asynccontextmanager
-    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncIterator[asyncio.Queue]:
+    async def stream_logs(self, max_queue_size: int = 1000) -> AsyncGenerator[asyncio.Queue[str | NodeAPIError], None]:
         """Context manager for streaming logs on-demand.
 
         Yields a queue that receives log messages in real-time.
