@@ -52,20 +52,40 @@ async def buffer_response(response: aiohttp.ClientResponse) -> BufferedResponse:
 
 
 class LazyClientSession:
-    def __init__(self, *, ssl_context, headers: dict[str, str], base_url: str, timeout: aiohttp.ClientTimeout):
+    def __init__(
+        self,
+        *,
+        ssl_context,
+        headers: dict[str, str],
+        base_url: str,
+        timeout: aiohttp.ClientTimeout,
+        connector_factory=None,
+        proxy: str | None = None,
+        proxy_auth: aiohttp.BasicAuth | None = None,
+    ):
         self._ssl_context = ssl_context
         self._headers = headers
         self._base_url = base_url
         self._timeout = timeout
+        self._connector_factory = connector_factory
+        self._proxy = proxy
+        self._proxy_auth = proxy_auth
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            connector = None
+            if self._connector_factory is not None:
+                connector = self._connector_factory(self._ssl_context)
+            else:
+                connector = aiohttp.TCPConnector(ssl=self._ssl_context)
             self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=self._ssl_context),
+                connector=connector,
                 headers=self._headers,
                 base_url=self._base_url,
                 timeout=self._timeout,
+                proxy=self._proxy,
+                proxy_auth=self._proxy_auth,
             )
         return self._session
 

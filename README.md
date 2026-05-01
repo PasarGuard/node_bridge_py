@@ -46,6 +46,7 @@ node = Bridge.create_node(
     extra={"region": "eu-1"},          # optional
     default_timeout=10,                # optional
     internal_timeout=15,               # optional
+    proxy="socks5://user:pass@127.0.0.1:1080",  # optional
 )
 ```
 
@@ -62,7 +63,17 @@ node = Bridge.create_node(
 - `logger`: optional custom logger
 - `default_timeout`: default timeout for public API methods
 - `internal_timeout`: timeout used for internal sync/log operations
+- `proxy`: optional upstream proxy URL for node traffic
 - `max_message_size`: gRPC only, HTTP/2 window/message sizing
+
+### Proxy Formats
+
+- `socks5://127.0.0.1:1080`
+- `socks5://user:pass@127.0.0.1:1080`
+- `socks4://127.0.0.1:1080`
+- `http://127.0.0.1:3128`
+- `http://user:pass@127.0.0.1:3128`
+- `https://user:pass@proxy.example.com:443`
 
 ### Connection Types
 

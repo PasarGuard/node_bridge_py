@@ -28,11 +28,12 @@ class Node(PasarGuardNode):
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
+        proxy: str | None = None,
         **kwargs,
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
-        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
+        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout, proxy)
 
         url = f"https://{host_for_url}:{port}/"
         self._client = LazyClientSession(
@@ -40,6 +41,9 @@ class Node(PasarGuardNode):
             headers={"Content-Type": "application/x-protobuf", "x-api-key": api_key},
             base_url=url,
             timeout=make_timeout(None),
+            connector_factory=None if self._proxy is None else self._proxy.aiohttp_connector_factory,
+            proxy=None if self._proxy is None else self._proxy.aiohttp_proxy_url,
+            proxy_auth=None if self._proxy is None else self._proxy.aiohttp_proxy_auth,
         )
 
         self._node_lock = asyncio.Lock()

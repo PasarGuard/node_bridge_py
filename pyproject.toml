@@ -14,9 +14,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.5",
+    "aiohttp-socks>=0.11.0",
     "grpclib>=0.4.9",
     "packaging>=26.2",
     "protobuf>=6.33.6",
+    "python-socks[asyncio]>=2.8.1",
 ]
 
 classifiers = ["Programming Language :: Python :: 3.12"]

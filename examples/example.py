@@ -43,6 +43,7 @@ async def main():
         default_timeout=15,  # Custom default timeout for API calls (default: 10s)
         internal_timeout=20,
         logger=logger,  # Custom timeout for internal operations (default: 15s)
+        # proxy="socks5://user:pass@127.0.0.1:1080",
     )
 
     # Start the node with custom timeout override (60s instead of instance default 15s)

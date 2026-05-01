@@ -59,6 +59,8 @@ def create_node(
             - logger (logging.Logger): Custom logger instance. If None, a default logger is created.
             - default_timeout (int): Default timeout in seconds for public API methods. Defaults to 10.
             - internal_timeout (int): Default timeout in seconds for internal operations. Defaults to 15.
+            - proxy (str): Optional upstream proxy URL. Supports socks4, socks4a, socks5, socks5h,
+              http, and https URL forms with or without credentials.
 
     Returns:
         PasarGuardNode: An initialized node instance ready for API operations.
@@ -92,6 +94,8 @@ def create_node(
         - SSL certificate values should be passed as strings, not file paths.
         - Use `extra` to inject any environment-specific settings or context.
         - Timeout values can be overridden per-call in individual API methods.
+        - `https://` proxies are supported for aiohttp-based requests; gRPC transport supports
+          HTTP CONNECT and SOCKS proxy schemes.
     """
 
     if connection is NodeType.grpc:

@@ -18,6 +18,7 @@ from PasarGuardNodeBridge.aiohttp_compat import (
     make_timeout,
 )
 from PasarGuardNodeBridge.common.service_pb2 import User
+from PasarGuardNodeBridge.proxy import parse_proxy_url
 
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
@@ -51,6 +52,7 @@ class Controller:
         logger: logging.Logger | None = None,
         default_timeout: int = DEFAULT_API_TIMEOUT,
         internal_timeout: int = DEFAULT_INTERNAL_TIMEOUT,
+        proxy: str | None = None,
     ):
         self.name = name
         if extra is None:
@@ -79,6 +81,11 @@ class Controller:
 
         except (ValueError, TypeError) as e:
             raise NodeAPIError(-2, f"Invalid API key format: {str(e)}")
+
+        try:
+            self._proxy = parse_proxy_url(proxy)
+        except ValueError as e:
+            raise NodeAPIError(-6, f"Invalid proxy format: {str(e)}") from e
 
         self._health = Health.NOT_CONNECTED
         self._tasks: list[asyncio.Task] = []
@@ -112,6 +119,9 @@ class Controller:
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             base_url=service_url,
             timeout=make_timeout(default_timeout),
+            connector_factory=None if self._proxy is None else self._proxy.aiohttp_connector_factory,
+            proxy=None if self._proxy is None else self._proxy.aiohttp_proxy_url,
+            proxy_auth=None if self._proxy is None else self._proxy.aiohttp_proxy_auth,
         )
 
     async def set_health(self, health: Health):

@@ -6,12 +6,30 @@ from typing import AsyncGenerator
 from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
 from grpclib.exceptions import GRPCError, StreamTerminatedError
+from python_socks.async_.asyncio import Proxy
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
+
+
+class ProxiedChannel(Channel):
+    def __init__(self, *args, proxy_url: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._proxy_url = proxy_url
+
+    async def _create_connection(self):
+        proxy = Proxy.from_url(self._proxy_url)
+        sock = await proxy.connect(dest_host=self._host, dest_port=self._port)
+        _, protocol = await self._loop.create_connection(
+            self._protocol_factory,
+            sock=sock,
+            ssl=self._ssl,
+            server_hostname=(self._config.ssl_target_name_override if self._ssl is not None else None),
+        )
+        return protocol
 
 
 class Node(PasarGuardNode):
@@ -28,11 +46,12 @@ class Node(PasarGuardNode):
         default_timeout: int = 10,
         internal_timeout: int = 15,
         max_message_size: int | None = None,
+        proxy: str | None = None,
         **kwargs,
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
-        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout)
+        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout, proxy)
 
         try:
             # Set HTTP/2 window sizes to 64MB to handle large node configurations
@@ -41,7 +60,14 @@ class Node(PasarGuardNode):
             if max_message_size is None:
                 max_message_size = 64 * 1024 * 1024  # 64MB
             self._max_message_size = max_message_size
-            self.channel = Channel(
+            channel_class = Channel if self._proxy is None else ProxiedChannel
+            channel_kwargs = {}
+            if self._proxy is not None:
+                if not self._proxy.grpc_supported:
+                    raise NodeAPIError(-7, f"{self._proxy.scheme.upper()} proxies are not supported for gRPC transport")
+                channel_kwargs["proxy_url"] = self._proxy.url
+
+            self.channel = channel_class(
                 host=address,
                 port=port,
                 ssl=self.ctx,
@@ -50,9 +76,12 @@ class Node(PasarGuardNode):
                     http2_connection_window_size=max_message_size,
                     http2_stream_window_size=max_message_size,
                 ),
+                **channel_kwargs,
             )
             self._client = service_grpc.NodeServiceStub(self.channel)
             self._metadata = {"x-api-key": api_key}
+        except NodeAPIError:
+            raise
         except Exception as e:
             raise NodeAPIError(-1, f"Channel initialization failed: {str(e)}")
 
