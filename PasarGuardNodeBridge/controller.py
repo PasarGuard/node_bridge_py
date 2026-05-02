@@ -71,10 +71,18 @@ class Controller:
         try:
             self.api_key = UUID(api_key)
 
-            self.ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            self.ctx.set_alpn_protocols(["h2"])
-            self.ctx.load_verify_locations(cadata=server_ca)
-            self.ctx.check_hostname = True
+            self.h2_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            self.h2_ctx.load_verify_locations(cadata=server_ca)
+            self.h2_ctx.check_hostname = True
+            self.h2_ctx.set_alpn_protocols(["h2"])
+
+            self.http1_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            self.http1_ctx.load_verify_locations(cadata=server_ca)
+            self.http1_ctx.check_hostname = True
+            self.http1_ctx.set_alpn_protocols(["http/1.1"])
+
+            # Backward-compatible alias for existing transport code that still expects `self.ctx`.
+            self.ctx = self.h2_ctx
 
         except ssl.SSLError as e:
             raise NodeAPIError(-1, f"SSL initialization failed: {str(e)}")
@@ -115,7 +123,7 @@ class Controller:
         self._shutdown_event = asyncio.Event()
 
         self._json_client = LazyClientSession(
-            ssl_context=self.ctx,
+            ssl_context=self.http1_ctx,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             base_url=service_url,
             timeout=make_timeout(default_timeout),
