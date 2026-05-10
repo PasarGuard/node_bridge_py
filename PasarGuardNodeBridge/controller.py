@@ -2,9 +2,11 @@ import asyncio
 import logging
 import math
 import ssl
+import time
+from datetime import datetime, timezone
 from enum import IntEnum
 from json import JSONDecodeError
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 import aiohttp
@@ -23,6 +25,22 @@ from PasarGuardNodeBridge.proxy import parse_proxy_url
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
 DEFAULT_INTERNAL_TIMEOUT = 15  # Default timeout for internal gRPC/HTTP operations
+
+
+class UTCFormatter(logging.Formatter):
+    converter = time.gmtime
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise NodeAPIError(code=-6, detail="Naive datetime values are not supported in JSON payloads")
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, dict):
+        return {key: _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 class NodeAPIError(Exception):
@@ -61,7 +79,12 @@ class Controller:
             logger = logging.getLogger(self.name)
             logger.setLevel(logging.INFO)
             handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+            handler.setFormatter(
+                UTCFormatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                    datefmt="%Y-%m-%dT%H:%M:%SZ",
+                )
+            )
             logger.addHandler(handler)
         self.logger = logger
 
@@ -532,7 +555,7 @@ class Controller:
 
         try:
             async with self._json_client.request(
-                method=method, url=endpoint, json=json, timeout=make_timeout(timeout)
+                method=method, url=endpoint, json=_json_safe(json), timeout=make_timeout(timeout)
             ) as raw_response:
                 response = await buffer_response(raw_response)
             response.raise_for_status()
