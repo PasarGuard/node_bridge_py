@@ -114,6 +114,36 @@ class StatsOnlineIpListResponse(_message.Message):
     ips: _containers.ScalarMap[str, int]
     def __init__(self, name: _Optional[str] = ..., ips: _Optional[_Mapping[str, int]] = ...) -> None: ...
 
+class Latency(_message.Message):
+    __slots__ = ("name", "alive", "delay", "link", "last_seen_time", "last_try_time", "source")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    ALIVE_FIELD_NUMBER: _ClassVar[int]
+    DELAY_FIELD_NUMBER: _ClassVar[int]
+    LINK_FIELD_NUMBER: _ClassVar[int]
+    LAST_SEEN_TIME_FIELD_NUMBER: _ClassVar[int]
+    LAST_TRY_TIME_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    alive: bool
+    delay: int
+    link: str
+    last_seen_time: int
+    last_try_time: int
+    source: str
+    def __init__(self, name: _Optional[str] = ..., alive: bool = ..., delay: _Optional[int] = ..., link: _Optional[str] = ..., last_seen_time: _Optional[int] = ..., last_try_time: _Optional[int] = ..., source: _Optional[str] = ...) -> None: ...
+
+class LatencyRequest(_message.Message):
+    __slots__ = ("name",)
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    def __init__(self, name: _Optional[str] = ...) -> None: ...
+
+class LatencyResponse(_message.Message):
+    __slots__ = ("latencies",)
+    LATENCIES_FIELD_NUMBER: _ClassVar[int]
+    latencies: _containers.RepeatedCompositeFieldContainer[Latency]
+    def __init__(self, latencies: _Optional[_Iterable[_Union[Latency, _Mapping]]] = ...) -> None: ...
+
 class BackendStatsResponse(_message.Message):
     __slots__ = ("num_goroutine", "num_gc", "alloc", "total_alloc", "sys", "mallocs", "frees", "live_objects", "pause_total_ns", "uptime")
     NUM_GOROUTINE_FIELD_NUMBER: _ClassVar[int]

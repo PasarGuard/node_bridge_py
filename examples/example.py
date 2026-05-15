@@ -81,6 +81,9 @@ async def main():
     stats = await node.get_system_stats(timeout=5)
     print(f"System stats: {stats}")
 
+    latencies = await node.get_outbounds_latency(timeout=5)
+    print(f"Outbounds latency: {latencies}")
+
     # Stream logs on-demand using context manager with real-time error detection
     print("\n--- Streaming logs (real-time error detection) ---")
     try:

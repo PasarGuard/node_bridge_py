@@ -160,6 +160,7 @@ if failed_users:
 ```python
 system_stats = await node.get_system_stats()
 backend_stats = await node.get_backend_stats()
+latencies = await node.get_outbounds_latency()
 
 all_outbounds = await node.get_stats(
     stat_type=service.StatType.Outbounds,
@@ -226,6 +227,7 @@ await node.update_geofiles({"remove_temp": True})
 - `get_system_stats(timeout=None)`
 - `get_backend_stats(timeout=None)`
 - `get_stats(stat_type, reset=True, name="", timeout=None)`
+- `get_outbounds_latency(name="", timeout=None)`
 - `get_user_online_stats(email, timeout=None)`
 - `get_user_online_ip_list(email, timeout=None)`
 

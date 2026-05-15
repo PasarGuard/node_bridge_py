@@ -43,6 +43,10 @@ class NodeServiceBase(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def GetOutboundsLatency(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.LatencyRequest, PasarGuardNodeBridge.common.service_pb2.LatencyResponse]') -> None:
+        pass
+
+    @abc.abstractmethod
     async def GetUserOnlineStats(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.StatRequest, PasarGuardNodeBridge.common.service_pb2.OnlineStatResponse]') -> None:
         pass
 
@@ -105,6 +109,12 @@ class NodeServiceBase(abc.ABC):
                 grpclib.const.Cardinality.UNARY_UNARY,
                 PasarGuardNodeBridge.common.service_pb2.StatRequest,
                 PasarGuardNodeBridge.common.service_pb2.StatResponse,
+            ),
+            '/service.NodeService/GetOutboundsLatency': grpclib.const.Handler(
+                self.GetOutboundsLatency,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.LatencyRequest,
+                PasarGuardNodeBridge.common.service_pb2.LatencyResponse,
             ),
             '/service.NodeService/GetUserOnlineStats': grpclib.const.Handler(
                 self.GetUserOnlineStats,
@@ -183,6 +193,12 @@ class NodeServiceStub:
             '/service.NodeService/GetStats',
             PasarGuardNodeBridge.common.service_pb2.StatRequest,
             PasarGuardNodeBridge.common.service_pb2.StatResponse,
+        )
+        self.GetOutboundsLatency = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/GetOutboundsLatency',
+            PasarGuardNodeBridge.common.service_pb2.LatencyRequest,
+            PasarGuardNodeBridge.common.service_pb2.LatencyResponse,
         )
         self.GetUserOnlineStats = grpclib.client.UnaryUnaryMethod(
             channel,

@@ -12,10 +12,10 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: PasarGuard
-Version: 0.7.1
+Version: 0.8.0
 """
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 __author__ = "PasarGuard"
 
 
@@ -123,7 +123,6 @@ def create_node(
 __all__ = [
     "PasarGuardNode",
     "NodeType",
-    "Node",
     "NodeAPIError",
     "Health",
     "create_user",

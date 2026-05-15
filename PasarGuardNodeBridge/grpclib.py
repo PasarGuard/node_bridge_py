@@ -218,6 +218,14 @@ class Node(PasarGuardNode):
             timeout=timeout,
         )
 
+    async def get_outbounds_latency(self, name: str = "", timeout: int | None = None) -> service.LatencyResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._handle_grpc_request(
+            method=self._client.GetOutboundsLatency,
+            request=service.LatencyRequest(name=name),
+            timeout=timeout,
+        )
+
     async def get_user_online_stats(self, email: str, timeout: int | None = None) -> service.OnlineStatResponse | None:
         timeout = timeout or self._default_timeout
         return await self._handle_grpc_request(

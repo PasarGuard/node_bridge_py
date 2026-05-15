@@ -28,7 +28,7 @@ message Backend {
 
 // log
 message Log {
-    string detail = 1;
+  string detail = 1;
 }
 
 // stats
@@ -68,70 +68,88 @@ message StatsOnlineIpListResponse {
   map<string, int64> ips = 2;
 }
 
+message Latency {
+  string name = 1;
+  bool alive = 2;
+  int64 delay = 3;
+  string link = 4;
+  int64 last_seen_time = 5;
+  int64 last_try_time = 6;
+  string source = 7;
+}
+
+message LatencyRequest {
+  string name = 1;
+}
+
+message LatencyResponse {
+  repeated Latency latencies = 1;
+}
+
 message BackendStatsResponse {
-    uint32 num_goroutine = 1;
-    uint32 num_gc = 2;
-    uint64 alloc = 3;
-    uint64 total_alloc = 4;
-    uint64 sys = 5;
-    uint64 mallocs = 6;
-    uint64 frees = 7;
-    uint64 live_objects = 8;
-    uint64 pause_total_ns = 9;
-    uint32 uptime = 10;
+  uint32 num_goroutine = 1;
+  uint32 num_gc = 2;
+  uint64 alloc = 3;
+  uint64 total_alloc = 4;
+  uint64 sys = 5;
+  uint64 mallocs = 6;
+  uint64 frees = 7;
+  uint64 live_objects = 8;
+  uint64 pause_total_ns = 9;
+  uint32 uptime = 10;
 }
 
 message SystemStatsResponse {
-    uint64 mem_total = 1;
-    uint64 mem_used = 2;
-    uint64 cpu_cores = 3;
-    double cpu_usage = 4;
-    uint64 incoming_bandwidth_speed = 5;
-    uint64 outgoing_bandwidth_speed = 6;
-    uint64 uptime = 7;
+  uint64 mem_total = 1;
+  uint64 mem_used = 2;
+  uint64 cpu_cores = 3;
+  double cpu_usage = 4;
+  uint64 incoming_bandwidth_speed = 5;
+  uint64 outgoing_bandwidth_speed = 6;
+  uint64 uptime = 7;
 }
 
 // User
 message Vmess {
-    string id = 1;
+  string id = 1;
 }
 
 message Vless {
-    string id = 1;
-    string flow = 2;
+  string id = 1;
+  string flow = 2;
 }
 
 message Trojan {
-    string password = 1;
+  string password = 1;
 }
 
 message Shadowsocks {
-    string password = 1;
-    string method = 2;
+  string password = 1;
+  string method = 2;
 }
 
 message Wireguard {
-    string public_key = 1;
-    repeated string peer_ips = 2;
+  string public_key = 1;
+  repeated string peer_ips = 2;
 }
 
 message Hysteria {
-    string auth = 1;
+  string auth = 1;
 }
 
 message Proxy {
-    Vmess vmess = 1;
-    Vless vless = 2;
-    Trojan trojan = 3;
-    Shadowsocks shadowsocks = 4;
-    Wireguard wireguard = 5;
-    Hysteria hysteria = 6;
+  Vmess vmess = 1;
+  Vless vless = 2;
+  Trojan trojan = 3;
+  Shadowsocks shadowsocks = 4;
+  Wireguard wireguard = 5;
+  Hysteria hysteria = 6;
 }
 
 message User {
-    string email = 1;
-    Proxy proxies = 2;
-    repeated string inbounds = 3;
+  string email = 1;
+  Proxy proxies = 2;
+  repeated string inbounds = 3;
 }
 
 message Users {
@@ -146,21 +164,22 @@ message UsersChunk {
 
 // Service for node management and connection
 service NodeService {
-  rpc Start (Backend) returns (BaseInfoResponse) {}
-  rpc Stop (Empty) returns (Empty) {}
-  rpc GetBaseInfo (Empty) returns (BaseInfoResponse) {}
+  rpc Start(Backend) returns (BaseInfoResponse) {}
+  rpc Stop(Empty) returns (Empty) {}
+  rpc GetBaseInfo(Empty) returns (BaseInfoResponse) {}
 
-  rpc GetLogs (Empty) returns (stream Log) {}
+  rpc GetLogs(Empty) returns (stream Log) {}
 
-  rpc GetSystemStats (Empty) returns (SystemStatsResponse) {}
-  rpc GetBackendStats (Empty) returns (BackendStatsResponse) {}
+  rpc GetSystemStats(Empty) returns (SystemStatsResponse) {}
+  rpc GetBackendStats(Empty) returns (BackendStatsResponse) {}
 
-  rpc GetStats (StatRequest) returns (StatResponse) {}
+  rpc GetStats(StatRequest) returns (StatResponse) {}
+  rpc GetOutboundsLatency(LatencyRequest) returns (LatencyResponse) {}
 
-  rpc GetUserOnlineStats (StatRequest) returns (OnlineStatResponse) {}
+  rpc GetUserOnlineStats(StatRequest) returns (OnlineStatResponse) {}
   rpc GetUserOnlineIpListStats(StatRequest) returns (StatsOnlineIpListResponse) {}
 
-  rpc SyncUser (stream User) returns (Empty) {}
-  rpc SyncUsers (Users) returns (Empty) {}
-  rpc SyncUsersChunked (stream UsersChunk) returns (Empty) {}
+  rpc SyncUser(stream User) returns (Empty) {}
+  rpc SyncUsers(Users) returns (Empty) {}
+  rpc SyncUsersChunked(stream UsersChunk) returns (Empty) {}
 }

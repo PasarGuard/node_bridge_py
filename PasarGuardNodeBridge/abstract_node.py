@@ -43,6 +43,10 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_outbounds_latency(self, name: str = "", timeout: int | None = None) -> service.LatencyResponse | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_user_online_stats(self, email: str, timeout: int | None = None) -> service.OnlineStatResponse | None:
         raise NotImplementedError
 
