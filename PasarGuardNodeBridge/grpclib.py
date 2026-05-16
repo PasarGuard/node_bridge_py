@@ -23,11 +23,12 @@ class ProxiedChannel(Channel):
     async def _create_connection(self):
         proxy = Proxy.from_url(self._proxy_url)
         sock = await proxy.connect(dest_host=self._host, dest_port=self._port)
+        server_hostname = self._config.ssl_target_name_override or self._host
         _, protocol = await self._loop.create_connection(
             self._protocol_factory,
             sock=sock,
             ssl=self._ssl,
-            server_hostname=(self._config.ssl_target_name_override if self._ssl is not None else None),
+            server_hostname=(server_hostname if self._ssl is not None else None),
         )
         return protocol
 
