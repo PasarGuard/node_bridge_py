@@ -11,6 +11,7 @@ class BackendType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     XRAY: _ClassVar[BackendType]
     WIREGUARD: _ClassVar[BackendType]
+    MTPROTO: _ClassVar[BackendType]
 
 class StatType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -22,6 +23,7 @@ class StatType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UserStat: _ClassVar[StatType]
 XRAY: BackendType
 WIREGUARD: BackendType
+MTPROTO: BackendType
 Outbounds: StatType
 Outbound: StatType
 Inbounds: StatType
@@ -228,21 +230,35 @@ class Hysteria(_message.Message):
     auth: str
     def __init__(self, auth: _Optional[str] = ...) -> None: ...
 
+class Mtproto(_message.Message):
+    __slots__ = ("secret", "user_ad_tag", "max_tcp_conns", "max_unique_ips")
+    SECRET_FIELD_NUMBER: _ClassVar[int]
+    USER_AD_TAG_FIELD_NUMBER: _ClassVar[int]
+    MAX_TCP_CONNS_FIELD_NUMBER: _ClassVar[int]
+    MAX_UNIQUE_IPS_FIELD_NUMBER: _ClassVar[int]
+    secret: str
+    user_ad_tag: str
+    max_tcp_conns: int
+    max_unique_ips: int
+    def __init__(self, secret: _Optional[str] = ..., user_ad_tag: _Optional[str] = ..., max_tcp_conns: _Optional[int] = ..., max_unique_ips: _Optional[int] = ...) -> None: ...
+
 class Proxy(_message.Message):
-    __slots__ = ("vmess", "vless", "trojan", "shadowsocks", "wireguard", "hysteria")
+    __slots__ = ("vmess", "vless", "trojan", "shadowsocks", "wireguard", "hysteria", "mtproto")
     VMESS_FIELD_NUMBER: _ClassVar[int]
     VLESS_FIELD_NUMBER: _ClassVar[int]
     TROJAN_FIELD_NUMBER: _ClassVar[int]
     SHADOWSOCKS_FIELD_NUMBER: _ClassVar[int]
     WIREGUARD_FIELD_NUMBER: _ClassVar[int]
     HYSTERIA_FIELD_NUMBER: _ClassVar[int]
+    MTPROTO_FIELD_NUMBER: _ClassVar[int]
     vmess: Vmess
     vless: Vless
     trojan: Trojan
     shadowsocks: Shadowsocks
     wireguard: Wireguard
     hysteria: Hysteria
-    def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ..., wireguard: _Optional[_Union[Wireguard, _Mapping]] = ..., hysteria: _Optional[_Union[Hysteria, _Mapping]] = ...) -> None: ...
+    mtproto: Mtproto
+    def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ..., wireguard: _Optional[_Union[Wireguard, _Mapping]] = ..., hysteria: _Optional[_Union[Hysteria, _Mapping]] = ..., mtproto: _Optional[_Union[Mtproto, _Mapping]] = ...) -> None: ...
 
 class User(_message.Message):
     __slots__ = ("email", "proxies", "inbounds")

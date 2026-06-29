@@ -5,6 +5,7 @@ from grpclib.const import Status
 
 from PasarGuardNodeBridge.common.service_pb2 import (
     Hysteria,
+    Mtproto,
     Proxy,
     Shadowsocks,
     Trojan,
@@ -29,6 +30,10 @@ def create_proxy(
     wireguard_public_key: str | None = None,
     wireguard_peer_ips: list[str] | None = None,
     hysteria_auth: str | None = None,
+    mtproto_secret: str | None = None,
+    mtproto_user_ad_tag: str | None = None,
+    mtproto_max_tcp_conns: int = 0,
+    mtproto_max_unique_ips: int = 0,
 ) -> Proxy:
     if wireguard_peer_ips is None:
         wireguard_peer_ips = []
@@ -40,6 +45,12 @@ def create_proxy(
         shadowsocks=Shadowsocks(password=shadowsocks_password, method=shadowsocks_method),
         wireguard=Wireguard(public_key=wireguard_public_key, peer_ips=wireguard_peer_ips),
         hysteria=Hysteria(auth=hysteria_auth),
+        mtproto=Mtproto(
+            secret=mtproto_secret,
+            user_ad_tag=mtproto_user_ad_tag,
+            max_tcp_conns=mtproto_max_tcp_conns,
+            max_unique_ips=mtproto_max_unique_ips,
+        ),
     )
 
 
