@@ -269,3 +269,98 @@ class UsersChunk(_message.Message):
     index: int
     last: bool
     def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., index: _Optional[int] = ..., last: bool = ...) -> None: ...
+
+class RoutingRule(_message.Message):
+    __slots__ = ("outbound_tag", "rule_tag")
+    OUTBOUND_TAG_FIELD_NUMBER: _ClassVar[int]
+    RULE_TAG_FIELD_NUMBER: _ClassVar[int]
+    outbound_tag: str
+    rule_tag: str
+    def __init__(self, outbound_tag: _Optional[str] = ..., rule_tag: _Optional[str] = ...) -> None: ...
+
+class RoutingRulesResponse(_message.Message):
+    __slots__ = ("rules",)
+    RULES_FIELD_NUMBER: _ClassVar[int]
+    rules: _containers.RepeatedCompositeFieldContainer[RoutingRule]
+    def __init__(self, rules: _Optional[_Iterable[_Union[RoutingRule, _Mapping]]] = ...) -> None: ...
+
+class BalancerInfoRequest(_message.Message):
+    __slots__ = ("tag",)
+    TAG_FIELD_NUMBER: _ClassVar[int]
+    tag: str
+    def __init__(self, tag: _Optional[str] = ...) -> None: ...
+
+class BalancerInfoResponse(_message.Message):
+    __slots__ = ("override_target", "principle_target")
+    OVERRIDE_TARGET_FIELD_NUMBER: _ClassVar[int]
+    PRINCIPLE_TARGET_FIELD_NUMBER: _ClassVar[int]
+    override_target: str
+    principle_target: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, override_target: _Optional[str] = ..., principle_target: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class TestRouteRequest(_message.Message):
+    __slots__ = ("inbound_tag", "network", "target_ip", "target_domain", "target_port", "protocol", "user", "attributes", "field_selectors", "publish_result")
+    class AttributesEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    INBOUND_TAG_FIELD_NUMBER: _ClassVar[int]
+    NETWORK_FIELD_NUMBER: _ClassVar[int]
+    TARGET_IP_FIELD_NUMBER: _ClassVar[int]
+    TARGET_DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    TARGET_PORT_FIELD_NUMBER: _ClassVar[int]
+    PROTOCOL_FIELD_NUMBER: _ClassVar[int]
+    USER_FIELD_NUMBER: _ClassVar[int]
+    ATTRIBUTES_FIELD_NUMBER: _ClassVar[int]
+    FIELD_SELECTORS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISH_RESULT_FIELD_NUMBER: _ClassVar[int]
+    inbound_tag: str
+    network: str
+    target_ip: str
+    target_domain: str
+    target_port: int
+    protocol: str
+    user: str
+    attributes: _containers.ScalarMap[str, str]
+    field_selectors: _containers.RepeatedScalarFieldContainer[str]
+    publish_result: bool
+    def __init__(self, inbound_tag: _Optional[str] = ..., network: _Optional[str] = ..., target_ip: _Optional[str] = ..., target_domain: _Optional[str] = ..., target_port: _Optional[int] = ..., protocol: _Optional[str] = ..., user: _Optional[str] = ..., attributes: _Optional[_Mapping[str, str]] = ..., field_selectors: _Optional[_Iterable[str]] = ..., publish_result: bool = ...) -> None: ...
+
+class RouteResult(_message.Message):
+    __slots__ = ("outbound_tag", "outbound_group_tags", "inbound_tag", "network", "target_domain")
+    OUTBOUND_TAG_FIELD_NUMBER: _ClassVar[int]
+    OUTBOUND_GROUP_TAGS_FIELD_NUMBER: _ClassVar[int]
+    INBOUND_TAG_FIELD_NUMBER: _ClassVar[int]
+    NETWORK_FIELD_NUMBER: _ClassVar[int]
+    TARGET_DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    outbound_tag: str
+    outbound_group_tags: _containers.RepeatedScalarFieldContainer[str]
+    inbound_tag: str
+    network: str
+    target_domain: str
+    def __init__(self, outbound_tag: _Optional[str] = ..., outbound_group_tags: _Optional[_Iterable[str]] = ..., inbound_tag: _Optional[str] = ..., network: _Optional[str] = ..., target_domain: _Optional[str] = ...) -> None: ...
+
+class AddRoutingRuleRequest(_message.Message):
+    __slots__ = ("rule", "should_append")
+    RULE_FIELD_NUMBER: _ClassVar[int]
+    SHOULD_APPEND_FIELD_NUMBER: _ClassVar[int]
+    rule: str
+    should_append: bool
+    def __init__(self, rule: _Optional[str] = ..., should_append: bool = ...) -> None: ...
+
+class RemoveRoutingRuleRequest(_message.Message):
+    __slots__ = ("rule_tag",)
+    RULE_TAG_FIELD_NUMBER: _ClassVar[int]
+    rule_tag: str
+    def __init__(self, rule_tag: _Optional[str] = ...) -> None: ...
+
+class OverrideBalancerTargetRequest(_message.Message):
+    __slots__ = ("balancer_tag", "target")
+    BALANCER_TAG_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_NUMBER: _ClassVar[int]
+    balancer_tag: str
+    target: str
+    def __init__(self, balancer_tag: _Optional[str] = ..., target: _Optional[str] = ...) -> None: ...
