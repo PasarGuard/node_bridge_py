@@ -206,6 +206,31 @@ await node.update_core({"version": "latest"})
 await node.update_geofiles({"remove_temp": True})
 ```
 
+### 8. Routing APIs
+
+Routing operations work over both gRPC and REST. They are xray-only: on a non-xray
+(e.g. WireGuard) node the call fails with `Bridge.NodeAPIError` code `501`.
+
+```python
+rules = await node.list_routing_rules()
+balancer = await node.get_balancer_info("balancer-tag")
+
+route = await node.test_route(
+    inbound_tag="inbound-1",
+    network="tcp",
+    target_domain="example.com",
+    target_port=443,
+)
+
+# `rule` is one xray routing rule as JSON (same shape as a routing.rules[] entry)
+await node.add_routing_rule(
+    '{"type":"field","outboundTag":"direct","domain":["example.com"],"ruleTag":"r1"}',
+    should_append=True,
+)
+await node.remove_routing_rule("r1")
+await node.override_balancer_target("balancer-tag", "outbound-tag")
+```
+
 ## API Reference
 
 ### Lifecycle
@@ -237,6 +262,17 @@ await node.update_geofiles({"remove_temp": True})
 - `update_users(users)` (queued/background)
 - `sync_users(users, flush_pending=False, timeout=None)` (direct)
 - `sync_users_chunked(users, chunk_size=100, flush_pending=False, timeout=None)` (direct streaming)
+
+### Routing
+
+Xray-only (gRPC and REST); on a non-xray backend these raise `NodeAPIError(501)`.
+
+- `list_routing_rules(timeout=None)`
+- `get_balancer_info(tag, timeout=None)`
+- `test_route(inbound_tag="", network="", target_ip="", target_domain="", target_port=0, protocol="", user="", attributes=None, field_selectors=None, publish_result=False, timeout=None)`
+- `add_routing_rule(rule, should_append=True, timeout=None)`
+- `remove_routing_rule(rule_tag, timeout=None)`
+- `override_balancer_target(balancer_tag, target, timeout=None)`
 
 ### Logging
 

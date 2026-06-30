@@ -347,6 +347,93 @@ class Node(PasarGuardNode):
                 )
                 return users
 
+    async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="GET",
+            endpoint="routing/rules",
+            timeout=timeout,
+            proto_response_class=service.RoutingRulesResponse,
+        )
+
+    async def get_balancer_info(self, tag: str, timeout: int | None = None) -> service.BalancerInfoResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="GET",
+            endpoint="routing/balancer",
+            timeout=timeout,
+            proto_message=service.BalancerInfoRequest(tag=tag),
+            proto_response_class=service.BalancerInfoResponse,
+        )
+
+    async def test_route(
+        self,
+        inbound_tag: str = "",
+        network: str = "",
+        target_ip: str = "",
+        target_domain: str = "",
+        target_port: int = 0,
+        protocol: str = "",
+        user: str = "",
+        attributes: dict[str, str] | None = None,
+        field_selectors: list[str] | None = None,
+        publish_result: bool = False,
+        timeout: int | None = None,
+    ) -> service.RouteResult | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="GET",
+            endpoint="routing/test",
+            timeout=timeout,
+            proto_message=service.TestRouteRequest(
+                inbound_tag=inbound_tag,
+                network=network,
+                target_ip=target_ip,
+                target_domain=target_domain,
+                target_port=target_port,
+                protocol=protocol,
+                user=user,
+                attributes=attributes or {},
+                field_selectors=field_selectors or [],
+                publish_result=publish_result,
+            ),
+            proto_response_class=service.RouteResult,
+        )
+
+    async def add_routing_rule(
+        self, rule: str, should_append: bool = True, timeout: int | None = None
+    ) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="PUT",
+            endpoint="routing/rules",
+            timeout=timeout,
+            proto_message=service.AddRoutingRuleRequest(rule=rule, should_append=should_append),
+            proto_response_class=service.Empty,
+        )
+
+    async def remove_routing_rule(self, rule_tag: str, timeout: int | None = None) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="DELETE",
+            endpoint="routing/rules",
+            timeout=timeout,
+            proto_message=service.RemoveRoutingRuleRequest(rule_tag=rule_tag),
+            proto_response_class=service.Empty,
+        )
+
+    async def override_balancer_target(
+        self, balancer_tag: str, target: str, timeout: int | None = None
+    ) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="PUT",
+            endpoint="routing/balancer/override",
+            timeout=timeout,
+            proto_message=service.OverrideBalancerTargetRequest(balancer_tag=balancer_tag, target=target),
+            proto_response_class=service.Empty,
+        )
+
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users individually via PUT user/sync. Returns failed users."""
         failed = []

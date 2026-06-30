@@ -69,6 +69,47 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_balancer_info(self, tag: str, timeout: int | None = None) -> service.BalancerInfoResponse | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def test_route(
+        self,
+        inbound_tag: str = "",
+        network: str = "",
+        target_ip: str = "",
+        target_domain: str = "",
+        target_port: int = 0,
+        protocol: str = "",
+        user: str = "",
+        attributes: dict[str, str] | None = None,
+        field_selectors: list[str] | None = None,
+        publish_result: bool = False,
+        timeout: int | None = None,
+    ) -> service.RouteResult | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_routing_rule(
+        self, rule: str, should_append: bool = True, timeout: int | None = None
+    ) -> service.Empty | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def remove_routing_rule(self, rule_tag: str, timeout: int | None = None) -> service.Empty | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def override_balancer_target(
+        self, balancer_tag: str, target: str, timeout: int | None = None
+    ) -> service.Empty | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def _check_node_health(self):
         raise NotImplementedError
 
