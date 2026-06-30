@@ -354,29 +354,35 @@ class Node(PasarGuardNode):
         self, rule: str, should_reset: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
         timeout = timeout or self._default_timeout
-        return await self._handle_grpc_request(
-            method=self._client.AddRoutingRule,
-            request=service.AddRoutingRuleRequest(rule=rule, should_reset=should_reset),
-            timeout=timeout,
-        )
+        # Serialize state-changing routing calls under the node lock, like the other
+        # mutating ops (start/stop/sync_users), so a rule change can't race a
+        # concurrent core restart (read-only routing methods stay lock-free).
+        async with self._node_lock:
+            return await self._handle_grpc_request(
+                method=self._client.AddRoutingRule,
+                request=service.AddRoutingRuleRequest(rule=rule, should_reset=should_reset),
+                timeout=timeout,
+            )
 
     async def remove_routing_rule(self, rule_tag: str, timeout: int | None = None) -> service.Empty | None:
         timeout = timeout or self._default_timeout
-        return await self._handle_grpc_request(
-            method=self._client.RemoveRoutingRule,
-            request=service.RemoveRoutingRuleRequest(rule_tag=rule_tag),
-            timeout=timeout,
-        )
+        async with self._node_lock:
+            return await self._handle_grpc_request(
+                method=self._client.RemoveRoutingRule,
+                request=service.RemoveRoutingRuleRequest(rule_tag=rule_tag),
+                timeout=timeout,
+            )
 
     async def override_balancer_target(
         self, balancer_tag: str, target: str, timeout: int | None = None
     ) -> service.Empty | None:
         timeout = timeout or self._default_timeout
-        return await self._handle_grpc_request(
-            method=self._client.OverrideBalancerTarget,
-            request=service.OverrideBalancerTargetRequest(balancer_tag=balancer_tag, target=target),
-            timeout=timeout,
-        )
+        async with self._node_lock:
+            return await self._handle_grpc_request(
+                method=self._client.OverrideBalancerTarget,
+                request=service.OverrideBalancerTargetRequest(balancer_tag=balancer_tag, target=target),
+                timeout=timeout,
+            )
 
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users via gRPC SyncUser stream. Returns failed users."""

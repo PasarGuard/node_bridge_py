@@ -404,35 +404,41 @@ class Node(PasarGuardNode):
         self, rule: str, should_reset: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
         timeout = timeout or self._default_timeout
-        return await self._make_request(
-            method="PUT",
-            endpoint="routing/rules",
-            timeout=timeout,
-            proto_message=service.AddRoutingRuleRequest(rule=rule, should_reset=should_reset),
-            proto_response_class=service.Empty,
-        )
+        # Serialize state-changing routing calls under the node lock, like the other
+        # mutating ops (start/stop/sync_users), so a rule change can't race a
+        # concurrent core restart (read-only routing methods stay lock-free).
+        async with self._node_lock:
+            return await self._make_request(
+                method="PUT",
+                endpoint="routing/rules",
+                timeout=timeout,
+                proto_message=service.AddRoutingRuleRequest(rule=rule, should_reset=should_reset),
+                proto_response_class=service.Empty,
+            )
 
     async def remove_routing_rule(self, rule_tag: str, timeout: int | None = None) -> service.Empty | None:
         timeout = timeout or self._default_timeout
-        return await self._make_request(
-            method="DELETE",
-            endpoint="routing/rules",
-            timeout=timeout,
-            proto_message=service.RemoveRoutingRuleRequest(rule_tag=rule_tag),
-            proto_response_class=service.Empty,
-        )
+        async with self._node_lock:
+            return await self._make_request(
+                method="DELETE",
+                endpoint="routing/rules",
+                timeout=timeout,
+                proto_message=service.RemoveRoutingRuleRequest(rule_tag=rule_tag),
+                proto_response_class=service.Empty,
+            )
 
     async def override_balancer_target(
         self, balancer_tag: str, target: str, timeout: int | None = None
     ) -> service.Empty | None:
         timeout = timeout or self._default_timeout
-        return await self._make_request(
-            method="PUT",
-            endpoint="routing/balancer/override",
-            timeout=timeout,
-            proto_message=service.OverrideBalancerTargetRequest(balancer_tag=balancer_tag, target=target),
-            proto_response_class=service.Empty,
-        )
+        async with self._node_lock:
+            return await self._make_request(
+                method="PUT",
+                endpoint="routing/balancer/override",
+                timeout=timeout,
+                proto_message=service.OverrideBalancerTargetRequest(balancer_tag=balancer_tag, target=target),
+                proto_response_class=service.Empty,
+            )
 
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users individually via PUT user/sync. Returns failed users."""
