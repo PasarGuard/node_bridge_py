@@ -351,12 +351,12 @@ class Node(PasarGuardNode):
         )
 
     async def add_routing_rule(
-        self, rule: str, should_append: bool = True, timeout: int | None = None
+        self, rule: str, should_reset: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
         timeout = timeout or self._default_timeout
         return await self._handle_grpc_request(
             method=self._client.AddRoutingRule,
-            request=service.AddRoutingRuleRequest(rule=rule, should_append=should_append),
+            request=service.AddRoutingRuleRequest(rule=rule, should_reset=should_reset),
             timeout=timeout,
         )
 

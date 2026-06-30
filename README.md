@@ -222,10 +222,11 @@ route = await node.test_route(
     target_port=443,
 )
 
-# `rule` is one xray routing rule as JSON (same shape as a routing.rules[] entry)
+# `rule` is one xray routing rule as JSON (same shape as a routing.rules[] entry).
+# Appended by default (keeps existing rules); pass should_reset=True to clear all
+# rules + balancers before adding.
 await node.add_routing_rule(
-    '{"type":"field","outboundTag":"direct","domain":["example.com"],"ruleTag":"r1"}',
-    should_append=True,
+    '{"type":"field","outboundTag":"direct","domain":["example.com"],"ruleTag":"r1"}'
 )
 await node.remove_routing_rule("r1")
 await node.override_balancer_target("balancer-tag", "outbound-tag")
@@ -270,7 +271,7 @@ Xray-only (gRPC and REST); on a non-xray backend these raise `NodeAPIError(501)`
 - `list_routing_rules(timeout=None)`
 - `get_balancer_info(tag, timeout=None)`
 - `test_route(inbound_tag="", network="", target_ip="", target_domain="", target_port=0, protocol="", user="", attributes=None, field_selectors=None, publish_result=False, timeout=None)`
-- `add_routing_rule(rule, should_append=True, timeout=None)`
+- `add_routing_rule(rule, should_reset=False, timeout=None)`
 - `remove_routing_rule(rule_tag, timeout=None)`
 - `override_balancer_target(balancer_tag, target, timeout=None)`
 

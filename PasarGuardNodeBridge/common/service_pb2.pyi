@@ -344,12 +344,12 @@ class RouteResult(_message.Message):
     def __init__(self, outbound_tag: _Optional[str] = ..., outbound_group_tags: _Optional[_Iterable[str]] = ..., inbound_tag: _Optional[str] = ..., network: _Optional[str] = ..., target_domain: _Optional[str] = ...) -> None: ...
 
 class AddRoutingRuleRequest(_message.Message):
-    __slots__ = ("rule", "should_append")
+    __slots__ = ("rule", "should_reset")
     RULE_FIELD_NUMBER: _ClassVar[int]
-    SHOULD_APPEND_FIELD_NUMBER: _ClassVar[int]
+    SHOULD_RESET_FIELD_NUMBER: _ClassVar[int]
     rule: str
-    should_append: bool
-    def __init__(self, rule: _Optional[str] = ..., should_append: bool = ...) -> None: ...
+    should_reset: bool
+    def __init__(self, rule: _Optional[str] = ..., should_reset: bool = ...) -> None: ...
 
 class RemoveRoutingRuleRequest(_message.Message):
     __slots__ = ("rule_tag",)

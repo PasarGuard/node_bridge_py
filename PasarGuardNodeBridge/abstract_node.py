@@ -95,7 +95,7 @@ class PasarGuardNode(Controller, ABC):
 
     @abstractmethod
     async def add_routing_rule(
-        self, rule: str, should_append: bool = True, timeout: int | None = None
+        self, rule: str, should_reset: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
         raise NotImplementedError
 
