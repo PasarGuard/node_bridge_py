@@ -12,6 +12,7 @@ from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
+from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
 
@@ -52,7 +53,18 @@ class Node(PasarGuardNode):
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
-        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout, proxy)
+        super().__init__(
+            server_ca,
+            api_key,
+            service_url,
+            name,
+            extra,
+            logger,
+            default_timeout,
+            internal_timeout,
+            proxy,
+            **kwargs,
+        )
 
         try:
             # Set HTTP/2 window sizes to 64MB to handle large node configurations
@@ -146,23 +158,35 @@ class Node(PasarGuardNode):
             type=backend_type, config=config, users=users, keep_alive=keep_alive, exclude_inbounds=exclude_inbounds
         )
 
-        async with self._node_lock:
-            info: service.BaseInfoResponse = await self._handle_grpc_request(
-                method=self._client.Start,
-                request=req,
-                timeout=timeout,
-            )
+        lease = await self._acquire_lifecycle_lease(LifecycleOperation.START)
+        try:
+            async with self._node_lock:
+                info: service.BaseInfoResponse = await self._handle_grpc_request(
+                    method=self._client.Start,
+                    request=req,
+                    timeout=timeout,
+                )
 
-            if not info.started:
-                raise NodeAPIError(500, "Failed to start the node")
+                if not info.started:
+                    raise NodeAPIError(500, "Failed to start the node")
 
-            try:
-                await self.connect(info.node_version, info.core_version)
-            except Exception as e:
-                await self.disconnect()
-                self._handle_error(e)
+                try:
+                    await self.connect(info.node_version, info.core_version)
+                except Exception as e:
+                    await self.disconnect()
+                    self._handle_error(e)
 
-            return info
+                await self._release_lifecycle_lease(
+                    lease,
+                    LifecycleStatus.HEALTHY,
+                    desired=LifecycleStatus.HEALTHY,
+                    node_version=info.node_version,
+                    core_version=info.core_version,
+                )
+                return info
+        except BaseException:
+            await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.HEALTHY)
+            raise
 
     async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
@@ -171,17 +195,25 @@ class Node(PasarGuardNode):
             if await self.get_health() is Health.NOT_CONNECTED:
                 return
 
-            async with self._node_lock:
-                await self.disconnect()
+            lease = await self._acquire_lifecycle_lease(LifecycleOperation.STOP)
+            try:
+                async with self._node_lock:
+                    await self.disconnect()
 
-                try:
-                    await self._handle_grpc_request(
-                        method=self._client.Stop,
-                        request=service.Empty(),
-                        timeout=timeout,
+                    try:
+                        await self._handle_grpc_request(
+                            method=self._client.Stop,
+                            request=service.Empty(),
+                            timeout=timeout,
+                        )
+                    except Exception:
+                        pass
+                    await self._release_lifecycle_lease(
+                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
                     )
-                except Exception:
-                    pass
+            except BaseException:
+                await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
+                raise
         finally:
             await self._json_client.close()
 

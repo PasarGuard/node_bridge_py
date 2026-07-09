@@ -19,6 +19,17 @@ from PasarGuardNodeBridge.aiohttp_compat import (
 )
 from PasarGuardNodeBridge.common.service_pb2 import User
 from PasarGuardNodeBridge.proxy import parse_proxy_url
+from PasarGuardNodeBridge.storage import (
+    ClaimedUser,
+    InMemoryNodeLifecycleCoordinator,
+    InMemoryUserSyncStore,
+    LifecycleLease,
+    LifecycleOperation,
+    LifecycleStatus,
+    NodeLifecycleCoordinatorProtocol,
+    NodeLifecycleState,
+    UserSyncStoreProtocol,
+)
 
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
@@ -53,8 +64,17 @@ class Controller:
         default_timeout: int = DEFAULT_API_TIMEOUT,
         internal_timeout: int = DEFAULT_INTERNAL_TIMEOUT,
         proxy: str | None = None,
+        node_id: str | None = None,
+        user_sync_store: UserSyncStoreProtocol | None = None,
+        worker_id: str | None = None,
+        sync_poll_interval: float = 1.0,
+        sync_lease_seconds: float = 30.0,
+        lifecycle_coordinator: NodeLifecycleCoordinatorProtocol | None = None,
+        lifecycle_lease_seconds: float = 60.0,
     ):
         self.name = name
+        self.node_id = node_id or name
+        self.worker_id = worker_id or f"{self.node_id}:{id(self)}"
         if extra is None:
             extra = {}
         if logger is None:
@@ -102,10 +122,14 @@ class Controller:
         self._extra = extra
 
         # Lazy worker sync mechanism
-        self._pending_users: dict[str, User] = {}  # email -> User (auto-dedup)
+        self._user_sync_store = user_sync_store or InMemoryUserSyncStore()
         self._sync_worker_task: asyncio.Task | None = None
         self._work_available = asyncio.Event()
         self._worker_idle_timeout = 5.0  # seconds before worker exits
+        self._sync_poll_interval = sync_poll_interval
+        self._sync_lease_seconds = sync_lease_seconds
+        self._lifecycle_coordinator = lifecycle_coordinator or InMemoryNodeLifecycleCoordinator()
+        self._lifecycle_lease_seconds = lifecycle_lease_seconds
 
         # Hard reset mechanism for critical failures
         self._hard_reset_event = asyncio.Event()
@@ -115,7 +139,6 @@ class Controller:
 
         # Separate locks for different resources to reduce contention
         self._health_lock = asyncio.Lock()
-        self._pending_users_lock = asyncio.Lock()
         self._sync_worker_lock = asyncio.Lock()
         self._version_lock = asyncio.Lock()
         self._task_lock = asyncio.Lock()
@@ -176,9 +199,8 @@ class Controller:
 
     async def update_user(self, user: User):
         """Queue a user for sync. Automatically deduplicates by email."""
-        async with self._pending_users_lock:
-            self._pending_users[user.email] = user  # Latest version wins
-            self._work_available.set()
+        await self._user_sync_store.enqueue_users(self.node_id, [user])
+        self._work_available.set()
 
         # Ensure worker is running to process the update
         await self._ensure_sync_worker_running()
@@ -188,10 +210,8 @@ class Controller:
         if not users:
             return
 
-        async with self._pending_users_lock:
-            for user in users:
-                self._pending_users[user.email] = user  # Latest version wins
-            self._work_available.set()
+        await self._user_sync_store.enqueue_users(self.node_id, users)
+        self._work_available.set()
 
         # Ensure worker is running to process the updates
         await self._ensure_sync_worker_running()
@@ -236,9 +256,8 @@ class Controller:
 
     async def flush_pending_users(self):
         """Clear all pending users without syncing them."""
-        async with self._pending_users_lock:
-            self._pending_users.clear()
-            self._work_available.clear()
+        await self._user_sync_store.clear(self.node_id)
+        self._work_available.clear()
 
     async def node_version(self) -> str:
         async with self._version_lock:
@@ -290,6 +309,41 @@ class Controller:
         """Check if the connected node supports chunked sync (>= v0.2.0)."""
         node_version = await self.node_version()
         return self._is_version_at_least(node_version, "0.2.0"), node_version
+
+    async def _acquire_lifecycle_lease(self, operation: LifecycleOperation) -> LifecycleLease:
+        lease = await self._lifecycle_coordinator.try_acquire(
+            self.node_id, self.worker_id, operation, self._lifecycle_lease_seconds
+        )
+        if lease is None:
+            raise NodeAPIError(409, f"Node lifecycle operation already in progress for {self.node_id}")
+        return lease
+
+    async def _release_lifecycle_lease(
+        self,
+        lease: LifecycleLease,
+        observed: LifecycleStatus,
+        desired: LifecycleStatus | None = None,
+        node_version: str = "",
+        core_version: str = "",
+    ) -> None:
+        state = NodeLifecycleState(
+            desired=desired or observed,
+            observed=observed,
+            epoch=lease.epoch,
+            operation=lease.operation,
+            owner=lease.worker_id,
+            node_version=node_version,
+            core_version=core_version,
+        )
+        await self._lifecycle_coordinator.release(lease, state)
+
+    async def get_lifecycle_state(self) -> NodeLifecycleState | None:
+        return await self._lifecycle_coordinator.get_state(self.node_id)
+
+    async def update_observed_lifecycle(
+        self, observed: LifecycleStatus, expected_epoch: int | None = None
+    ) -> None:
+        await self._lifecycle_coordinator.update_observed(self.node_id, observed, expected_epoch)
 
     async def connect(self, node_version: str, core_version: str, tasks: list | None = None):
         # Validate versions are not empty
@@ -381,9 +435,8 @@ class Controller:
                 self._sync_worker_task = None
 
         # Clear pending users
-        async with self._pending_users_lock:
-            self._pending_users.clear()
-            self._work_available.clear()
+        await self._user_sync_store.clear(self.node_id)
+        self._work_available.clear()
 
     def is_shutting_down(self) -> bool:
         """Check if the node is shutting down"""
@@ -395,26 +448,22 @@ class Controller:
             if self._sync_worker_task is None or self._sync_worker_task.done():
                 self._sync_worker_task = asyncio.create_task(self._sync_worker())
 
-    async def _drain_pending_users(self) -> list[User]:
-        """Atomically get and clear all pending users."""
-        async with self._pending_users_lock:
-            if not self._pending_users:
-                self._work_available.clear()
-                return []
-            users = list(self._pending_users.values())
-            self._pending_users.clear()
+    async def _claim_pending_users(self, limit: int = 2000) -> list[ClaimedUser]:
+        """Claim pending users from the configured sync store."""
+        claimed = await self._user_sync_store.claim_users(
+            self.node_id, self.worker_id, limit=limit, lease_seconds=self._sync_lease_seconds
+        )
+        if not claimed:
             self._work_available.clear()
-            return users
+        return claimed
 
-    async def _requeue_failed_users(self, users: list[User]):
-        """Re-queue users that failed to sync (only if not already pending)."""
-        async with self._pending_users_lock:
-            for user in users:
-                # Only re-queue if there's no newer version pending
-                if user.email not in self._pending_users:
-                    self._pending_users[user.email] = user
-            if self._pending_users:
-                self._work_available.set()
+    async def _ack_claimed_users(self, claimed_users: list[ClaimedUser]):
+        await self._user_sync_store.ack_users(self.node_id, [item.token for item in claimed_users])
+
+    async def _requeue_claimed_users(self, claimed_users: list[ClaimedUser]):
+        await self._user_sync_store.requeue_users(self.node_id, claimed_users)
+        if claimed_users:
+            self._work_available.set()
 
     async def _sync_worker(self):
         """Lazy worker that processes pending users and exits when idle."""
@@ -453,10 +502,12 @@ class Controller:
                     retry_delay = min(retry_delay * 2, max_retry_delay)
                     continue
 
-                # Drain all pending users atomically (only when healthy)
-                users = await self._drain_pending_users()
-                if not users:
+                # Claim pending users atomically (only when healthy)
+                claimed_users = await self._claim_pending_users()
+                if not claimed_users:
+                    await asyncio.sleep(self._sync_poll_interval)
                     continue
+                users = [item.user for item in claimed_users]
 
                 # Prefer chunked sync for large batches to reduce per-request overhead
                 use_chunked = supports_chunked and len(users) >= 1000
@@ -471,7 +522,13 @@ class Controller:
                             f"[{self.name}] {len(failed_users)}/{len(users)} users failed to chunk-sync "
                             f"(chunk_size={chunk_size})"
                         )
-                        await self._requeue_failed_users(failed_users)
+                        failed_emails = {user.email for user in failed_users}
+                        await self._ack_claimed_users(
+                            [item for item in claimed_users if item.user.email not in failed_emails]
+                        )
+                        await self._requeue_claimed_users(
+                            [item for item in claimed_users if item.user.email in failed_emails]
+                        )
                         await self._increment_user_sync_failure()
                         await asyncio.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, max_retry_delay)
@@ -479,6 +536,7 @@ class Controller:
                         self.logger.debug(
                             f"[{self.name}] Chunk-synced {len(users)} user(s) with chunk_size={chunk_size}"
                         )
+                        await self._ack_claimed_users(claimed_users)
                         await self._reset_user_sync_failure_count()
                         retry_delay = 1.0
                 else:
@@ -487,13 +545,20 @@ class Controller:
                         failed_users = await self._sync_batch_users(users)
                         if failed_users:
                             self.logger.warning(f"[{self.name}] {len(failed_users)}/{len(users)} users failed to sync")
-                            await self._requeue_failed_users(failed_users)
+                            failed_emails = {user.email for user in failed_users}
+                            await self._ack_claimed_users(
+                                [item for item in claimed_users if item.user.email not in failed_emails]
+                            )
+                            await self._requeue_claimed_users(
+                                [item for item in claimed_users if item.user.email in failed_emails]
+                            )
                             await self._increment_user_sync_failure()
                             # Exponential backoff on partial failure
                             await asyncio.sleep(retry_delay)
                             retry_delay = min(retry_delay * 2, max_retry_delay)
                         else:
                             self.logger.debug(f"[{self.name}] Synced {len(users)} user(s)")
+                            await self._ack_claimed_users(claimed_users)
                             await self._reset_user_sync_failure_count()
                             retry_delay = 1.0  # Reset retry delay on success
 
@@ -504,7 +569,7 @@ class Controller:
                             f"Error: {error_type} - {str(e)}"
                         )
                         await self._increment_user_sync_failure()
-                        await self._requeue_failed_users(users)
+                        await self._requeue_claimed_users(claimed_users)
                         # Exponential backoff on failure
                         await asyncio.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, max_retry_delay)

@@ -10,6 +10,7 @@ from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientSession, buffer_response, make_timeout
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
+from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url
 
 ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
@@ -33,7 +34,18 @@ class Node(PasarGuardNode):
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
-        super().__init__(server_ca, api_key, service_url, name, extra, logger, default_timeout, internal_timeout, proxy)
+        super().__init__(
+            server_ca,
+            api_key,
+            service_url,
+            name,
+            extra,
+            logger,
+            default_timeout,
+            internal_timeout,
+            proxy,
+            **kwargs,
+        )
 
         url = f"https://{host_for_url}:{port}/"
         self._client = LazyClientSession(
@@ -162,31 +174,43 @@ class Node(PasarGuardNode):
         if health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
-        async with self._node_lock:
-            response = await self._make_request(
-                method="POST",
-                endpoint="start",
-                timeout=timeout,
-                proto_message=service.Backend(
-                    type=backend_type,
-                    config=config,
-                    users=users,
-                    keep_alive=keep_alive,
-                    exclude_inbounds=exclude_inbounds,
-                ),
-                proto_response_class=service.BaseInfoResponse,
+        lease = await self._acquire_lifecycle_lease(LifecycleOperation.START)
+        try:
+            async with self._node_lock:
+                response = await self._make_request(
+                    method="POST",
+                    endpoint="start",
+                    timeout=timeout,
+                    proto_message=service.Backend(
+                        type=backend_type,
+                        config=config,
+                        users=users,
+                        keep_alive=keep_alive,
+                        exclude_inbounds=exclude_inbounds,
+                    ),
+                    proto_response_class=service.BaseInfoResponse,
+                )
+
+                if not response.started:
+                    raise NodeAPIError(500, "Failed to start the node")
+
+                try:
+                    await self.connect(response.node_version, response.core_version)
+                except BaseException as e:
+                    await self.disconnect()
+                    self._handle_error(e)
+
+            await self._release_lifecycle_lease(
+                lease,
+                LifecycleStatus.HEALTHY,
+                desired=LifecycleStatus.HEALTHY,
+                node_version=response.node_version,
+                core_version=response.core_version,
             )
-
-            if not response.started:
-                raise NodeAPIError(500, "Failed to start the node")
-
-            try:
-                await self.connect(response.node_version, response.core_version)
-            except BaseException as e:
-                await self.disconnect()
-                self._handle_error(e)
-
-        return response
+            return response
+        except BaseException:
+            await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.HEALTHY)
+            raise
 
     async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
@@ -195,13 +219,21 @@ class Node(PasarGuardNode):
             if await self.get_health() is Health.NOT_CONNECTED:
                 return
 
-            async with self._node_lock:
-                await self.disconnect()
+            lease = await self._acquire_lifecycle_lease(LifecycleOperation.STOP)
+            try:
+                async with self._node_lock:
+                    await self.disconnect()
 
-                try:
-                    await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
-                except Exception:
-                    pass
+                    try:
+                        await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
+                    except Exception:
+                        pass
+                    await self._release_lifecycle_lease(
+                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
+                    )
+            except BaseException:
+                await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
+                raise
         finally:
             await self._client.close()
             await self._json_client.close()
