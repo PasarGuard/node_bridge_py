@@ -134,6 +134,87 @@ more_users = [user1, user2, user3]
 await node.update_users(more_users)
 ```
 
+#### Shared Storage For Multiple Workers
+
+By default, queued user updates are kept in a process-local in-memory store shared by node instances. This coordinates controllers in a single worker process when they use the same `node_id` (or the same service URL when `node_id` is omitted). For multi-process or multi-host deployments, pass a shared `user_sync_store` implementation so all workers claim from the same pending-user queue. The package only defines the async protocol; Redis, NATS KV, SQL, or any other backend can be implemented by your application.
+
+```python
+store = MyRedisUserSyncStore(redis_client)  # implements Bridge.UserSyncStoreProtocol
+
+node = Bridge.create_node(
+    connection=Bridge.NodeType.grpc,
+    address="127.0.0.1",
+    port=2096,
+    api_port=2097,
+    server_ca=server_ca_pem_string,
+    api_key="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    node_id="node-1",
+    worker_id="worker-a",
+    user_sync_store=store,
+)
+```
+
+A `UserSyncStoreProtocol` implementation must provide these async methods:
+
+- `enqueue_users(node_id, users)` stores latest user payloads by email.
+- `claim_users(node_id, worker_id, limit, lease_seconds)` atomically leases work and returns `ClaimedUser` items.
+- `ack_users(node_id, tokens)` removes successfully synced claims.
+- `requeue_users(node_id, claimed_users)` makes failed claims available again.
+- `clear(node_id)` clears pending and claimed updates for a node.
+
+Delivery is at-least-once. A crashed worker may cause the same latest user payload to be synced again after its lease expires, so external adapters should use atomic claim/lease operations such as Redis Lua/transactions or NATS KV revision compare-and-set.
+
+Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, and `update_geofiles()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
+
+```python
+lifecycle = MyRedisLifecycleCoordinator(redis_client)
+
+node = Bridge.create_node(
+    connection=Bridge.NodeType.grpc,
+    address="127.0.0.1",
+    port=2096,
+    api_port=2097,
+    server_ca=server_ca_pem_string,
+    api_key="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    node_id="node-1",
+    worker_id="worker-a",
+    user_sync_store=store,
+    lifecycle_coordinator=lifecycle,
+)
+
+state = await node.get_lifecycle_state()
+health = await node.get_health()
+if state is not None:
+    await node.update_observed_lifecycle(
+        Bridge.LifecycleStatus.HEALTHY if health is Bridge.Health.HEALTHY else Bridge.LifecycleStatus.BROKEN,
+        expected_epoch=state.epoch,
+    )
+```
+
+A lifecycle adapter must atomically acquire/release leases and fence writes with the returned epoch. This prevents a cron status job or another worker from overwriting the result of a newer `start()`, `stop()`, or reconnect flow.
+
+Node connection configs can also be stored through a registry protocol:
+
+```python
+registry = MyNodeRegistry(...)
+config = Bridge.NodeConfig(
+    connection="grpc",
+    address="127.0.0.1",
+    port=2096,
+    api_port=2097,
+    server_ca=server_ca_pem_string,
+    api_key="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+)
+
+await Bridge.save_node_config(registry, "node-1", config)
+node = await Bridge.create_node_from_registry(
+    registry,
+    "node-1",
+    user_sync_store=store,
+    worker_id="worker-a",
+)
+```
+
 ### 2. Direct User Sync
 
 Use direct sync when you want explicit control in your flow.

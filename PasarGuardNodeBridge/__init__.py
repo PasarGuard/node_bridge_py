@@ -25,6 +25,20 @@ from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
 from PasarGuardNodeBridge.grpclib import Node as GrpcNode
 from PasarGuardNodeBridge.rest import Node as RestNode
+from PasarGuardNodeBridge.storage import (
+    ClaimedUser,
+    InMemoryNodeLifecycleCoordinator,
+    InMemoryNodeRegistry,
+    InMemoryUserSyncStore,
+    LifecycleLease,
+    LifecycleOperation,
+    LifecycleStatus,
+    NodeConfig,
+    NodeLifecycleCoordinatorProtocol,
+    NodeLifecycleState,
+    NodeRegistryProtocol,
+    UserSyncStoreProtocol,
+)
 from PasarGuardNodeBridge.utils import create_proxy, create_user
 
 
@@ -120,6 +134,26 @@ def create_node(
         raise ValueError("invalid backend type")
 
 
+def create_node_from_config(config: NodeConfig, **runtime_overrides) -> PasarGuardNode:
+    data = config.to_dict()
+    data.update(runtime_overrides)
+    connection = NodeType(data.pop("connection"))
+    return create_node(connection=connection, **data)
+
+
+async def save_node_config(registry: NodeRegistryProtocol, node_id: str, config: NodeConfig) -> None:
+    await registry.upsert_node(node_id, config)
+
+
+async def create_node_from_registry(
+    registry: NodeRegistryProtocol, node_id: str, **runtime_overrides
+) -> PasarGuardNode:
+    config = await registry.get_node(node_id)
+    if config is None:
+        raise KeyError(f"Node config not found: {node_id}")
+    return create_node_from_config(config, node_id=node_id, **runtime_overrides)
+
+
 __all__ = [
     "PasarGuardNode",
     "NodeType",
@@ -128,4 +162,19 @@ __all__ = [
     "create_user",
     "create_proxy",
     "create_node",
+    "create_node_from_registry",
+    "save_node_config",
+    "create_node_from_config",
+    "InMemoryUserSyncStore",
+    "InMemoryNodeRegistry",
+    "UserSyncStoreProtocol",
+    "NodeRegistryProtocol",
+    "NodeConfig",
+    "ClaimedUser",
+    "NodeLifecycleState",
+    "NodeLifecycleCoordinatorProtocol",
+    "LifecycleStatus",
+    "LifecycleOperation",
+    "LifecycleLease",
+    "InMemoryNodeLifecycleCoordinator",
 ]
