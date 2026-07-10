@@ -136,7 +136,7 @@ await node.update_users(more_users)
 
 #### Shared Storage For Multiple Workers
 
-By default, queued user updates are kept in memory. For multi-worker deployments, pass a shared `user_sync_store` implementation so all workers claim from the same pending-user queue. The package only defines the async protocol; Redis, NATS KV, SQL, or any other backend can be implemented by your application.
+By default, queued user updates are kept in a process-local in-memory store shared by node instances. This coordinates controllers in a single worker process when they use the same `node_id` (or the same service URL when `node_id` is omitted). For multi-process or multi-host deployments, pass a shared `user_sync_store` implementation so all workers claim from the same pending-user queue. The package only defines the async protocol; Redis, NATS KV, SQL, or any other backend can be implemented by your application.
 
 ```python
 store = MyRedisUserSyncStore(redis_client)  # implements Bridge.UserSyncStoreProtocol
@@ -164,7 +164,7 @@ A `UserSyncStoreProtocol` implementation must provide these async methods:
 
 Delivery is at-least-once. A crashed worker may cause the same latest user payload to be synced again after its lease expires, so external adapters should use atomic claim/lease operations such as Redis Lua/transactions or NATS KV revision compare-and-set.
 
-Lifecycle operations can also be coordinated across workers. Pass a shared `lifecycle_coordinator` so only one worker can run `start()` or `stop()` for a node at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
+Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, and `update_geofiles()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
 
 ```python
 lifecycle = MyRedisLifecycleCoordinator(redis_client)

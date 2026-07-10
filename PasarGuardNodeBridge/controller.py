@@ -21,14 +21,14 @@ from PasarGuardNodeBridge.common.service_pb2 import User
 from PasarGuardNodeBridge.proxy import parse_proxy_url
 from PasarGuardNodeBridge.storage import (
     ClaimedUser,
-    InMemoryNodeLifecycleCoordinator,
-    InMemoryUserSyncStore,
     LifecycleLease,
     LifecycleOperation,
     LifecycleStatus,
     NodeLifecycleCoordinatorProtocol,
     NodeLifecycleState,
     UserSyncStoreProtocol,
+    get_default_lifecycle_coordinator,
+    get_default_user_sync_store,
 )
 
 # Default timeout configuration (module-level constants)
@@ -73,7 +73,7 @@ class Controller:
         lifecycle_lease_seconds: float = 60.0,
     ):
         self.name = name
-        self.node_id = node_id or name
+        self.node_id = node_id or service_url
         self.worker_id = worker_id or f"{self.node_id}:{id(self)}"
         if extra is None:
             extra = {}
@@ -122,14 +122,17 @@ class Controller:
         self._extra = extra
 
         # Lazy worker sync mechanism
-        self._user_sync_store = user_sync_store or InMemoryUserSyncStore()
+        self._user_sync_store = user_sync_store if user_sync_store is not None else get_default_user_sync_store()
         self._sync_worker_task: asyncio.Task | None = None
         self._work_available = asyncio.Event()
         self._worker_idle_timeout = 5.0  # seconds before worker exits
         self._sync_poll_interval = sync_poll_interval
         self._sync_lease_seconds = sync_lease_seconds
-        self._lifecycle_coordinator = lifecycle_coordinator or InMemoryNodeLifecycleCoordinator()
+        self._lifecycle_coordinator = (
+            lifecycle_coordinator if lifecycle_coordinator is not None else get_default_lifecycle_coordinator()
+        )
         self._lifecycle_lease_seconds = lifecycle_lease_seconds
+        self._lifecycle_heartbeat_tasks: dict[str, asyncio.Task] = {}
 
         # Hard reset mechanism for critical failures
         self._hard_reset_event = asyncio.Event()
@@ -310,22 +313,41 @@ class Controller:
         node_version = await self.node_version()
         return self._is_version_at_least(node_version, "0.2.0"), node_version
 
+    async def _heartbeat_lifecycle_lease(self, lease: LifecycleLease) -> None:
+        interval = max(self._lifecycle_lease_seconds / 3, 0.01)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                await self._lifecycle_coordinator.heartbeat(lease)
+        except asyncio.CancelledError:
+            pass
+
     async def _acquire_lifecycle_lease(self, operation: LifecycleOperation) -> LifecycleLease:
         lease = await self._lifecycle_coordinator.try_acquire(
             self.node_id, self.worker_id, operation, self._lifecycle_lease_seconds
         )
         if lease is None:
             raise NodeAPIError(409, f"Node lifecycle operation already in progress for {self.node_id}")
+        self._lifecycle_heartbeat_tasks[lease.token] = asyncio.create_task(self._heartbeat_lifecycle_lease(lease))
         return lease
 
     async def _release_lifecycle_lease(
         self,
         lease: LifecycleLease,
-        observed: LifecycleStatus,
+        observed: LifecycleStatus | None = None,
         desired: LifecycleStatus | None = None,
         node_version: str = "",
         core_version: str = "",
     ) -> None:
+        heartbeat = self._lifecycle_heartbeat_tasks.pop(lease.token, None)
+        if heartbeat is not None:
+            heartbeat.cancel()
+            await heartbeat
+
+        if observed is None:
+            await self._lifecycle_coordinator.release(lease)
+            return
+
         state = NodeLifecycleState(
             desired=desired or observed,
             observed=observed,
@@ -340,9 +362,7 @@ class Controller:
     async def get_lifecycle_state(self) -> NodeLifecycleState | None:
         return await self._lifecycle_coordinator.get_state(self.node_id)
 
-    async def update_observed_lifecycle(
-        self, observed: LifecycleStatus, expected_epoch: int | None = None
-    ) -> None:
+    async def update_observed_lifecycle(self, observed: LifecycleStatus, expected_epoch: int | None = None) -> None:
         await self._lifecycle_coordinator.update_observed(self.node_id, observed, expected_epoch)
 
     async def connect(self, node_version: str, core_version: str, tasks: list | None = None):
@@ -628,26 +648,29 @@ class Controller:
             self.logger.error(f"[{self.name}] Connectivity check failed: {str(e)}")
             return False
 
-    async def update_node(self) -> BufferedResponse:
-        """Trigger a node update via the REST API."""
-
+    async def _run_coordinated_update(
+        self,
+        operation: LifecycleOperation,
+        endpoint: str,
+        json: dict | None = None,
+    ) -> BufferedResponse:
         if not (await self.check_connectivity()):
             raise NodeAPIError(code=503, detail="Node service is not reachable")
-        response = await self._make_json_request(method="POST", endpoint="/node/update")
-        return response
+
+        lease = await self._acquire_lifecycle_lease(operation)
+        try:
+            return await self._make_json_request(method="POST", endpoint=endpoint, json=json)
+        finally:
+            await self._release_lifecycle_lease(lease)
+
+    async def update_node(self) -> BufferedResponse:
+        """Trigger a node update via the REST API."""
+        return await self._run_coordinated_update(LifecycleOperation.UPDATE_NODE, "/node/update")
 
     async def update_core(self, json: dict) -> BufferedResponse:
         """Trigger a node core update via the REST API."""
-
-        if not (await self.check_connectivity()):
-            raise NodeAPIError(code=503, detail="Node service is not reachable")
-        response = await self._make_json_request(method="POST", endpoint="/node/core_update", json=json)
-        return response
+        return await self._run_coordinated_update(LifecycleOperation.UPDATE_CORE, "/node/core_update", json)
 
     async def update_geofiles(self, json: dict) -> BufferedResponse:
         """Trigger a node geofiles update via the REST API."""
-
-        if not (await self.check_connectivity()):
-            raise NodeAPIError(code=503, detail="Node service is not reachable")
-        response = await self._make_json_request(method="POST", endpoint="/node/geofiles", json=json)
-        return response
+        return await self._run_coordinated_update(LifecycleOperation.UPDATE_GEOFILES, "/node/geofiles", json)

@@ -60,6 +60,9 @@ class LifecycleOperation(str, Enum):
     START = "start"
     STOP = "stop"
     RECONNECT = "reconnect"
+    UPDATE_NODE = "update_node"
+    UPDATE_CORE = "update_core"
+    UPDATE_GEOFILES = "update_geofiles"
 
 
 class LifecycleStatus(str, Enum):
@@ -78,6 +81,7 @@ class LifecycleLease:
     operation: LifecycleOperation
     token: str
     epoch: int
+    lease_seconds: float = 30.0
 
 
 @dataclass(slots=True)
@@ -215,6 +219,7 @@ class InMemoryNodeLifecycleCoordinator:
                 operation=operation,
                 token=f"{worker_id}:{uuid4()}",
                 epoch=epoch,
+                lease_seconds=lease_seconds,
             )
             state.epoch = epoch
             state.operation = operation
@@ -250,15 +255,13 @@ class InMemoryNodeLifecycleCoordinator:
         async with self._lock:
             current = self._leases.get(lease.node_id)
             if current is not None and current[0].token == lease.token:
-                self._leases[lease.node_id] = (lease, now + 30.0)
+                self._leases[lease.node_id] = (lease, now + lease.lease_seconds)
 
     async def get_state(self, node_id: str) -> NodeLifecycleState | None:
         async with self._lock:
             return self._states.get(node_id)
 
-    async def update_observed(
-        self, node_id: str, observed: LifecycleStatus, expected_epoch: int | None = None
-    ) -> None:
+    async def update_observed(self, node_id: str, observed: LifecycleStatus, expected_epoch: int | None = None) -> None:
         now = time.monotonic()
         async with self._lock:
             state = self._states.get(node_id) or NodeLifecycleState(updated_at=now)
@@ -267,3 +270,17 @@ class InMemoryNodeLifecycleCoordinator:
             state.observed = observed
             state.updated_at = now
             self._states[node_id] = state
+
+
+_default_user_sync_store = InMemoryUserSyncStore()
+_default_lifecycle_coordinator = InMemoryNodeLifecycleCoordinator()
+
+
+def get_default_user_sync_store() -> InMemoryUserSyncStore:
+    """Return the process-local store shared by default controller instances."""
+    return _default_user_sync_store
+
+
+def get_default_lifecycle_coordinator() -> InMemoryNodeLifecycleCoordinator:
+    """Return the process-local coordinator shared by default controller instances."""
+    return _default_lifecycle_coordinator

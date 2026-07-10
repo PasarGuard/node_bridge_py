@@ -1,7 +1,10 @@
 import asyncio
 import unittest
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 from PasarGuardNodeBridge.common.service_pb2 import User
+from PasarGuardNodeBridge.controller import Controller, NodeAPIError
 from PasarGuardNodeBridge.storage import (
     InMemoryNodeLifecycleCoordinator,
     InMemoryNodeRegistry,
@@ -60,8 +63,7 @@ class InMemoryUserSyncStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_lease_becomes_claimable(self):
         store = InMemoryUserSyncStore()
         await store.enqueue_users("node-1", [User(email="a@example.com")])
-        await store.claim_users("node-1", "worker-1", limit=10, lease_seconds=0.001)
-        await asyncio.sleep(0.01)
+        await store.claim_users("node-1", "worker-1", limit=10, lease_seconds=0)
 
         claimed_again = await store.claim_users("node-1", "worker-2", limit=10, lease_seconds=30)
 
@@ -143,6 +145,47 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(lease)
         self.assertEqual(lease.worker_id, "worker-2")
+
+    async def test_node_update_is_exclusive_across_controllers(self):
+        coordinator = InMemoryNodeLifecycleCoordinator()
+        request_started = asyncio.Event()
+        finish_request = asyncio.Event()
+        response = object()
+
+        async def blocking_request(**kwargs):
+            request_started.set()
+            await finish_request.wait()
+            return response
+
+        first = Controller.__new__(Controller)
+        first.node_id = "node-1"
+        first.worker_id = "worker-1"
+        first._lifecycle_coordinator = coordinator
+        first._lifecycle_lease_seconds = 30
+        first._lifecycle_heartbeat_tasks = {}
+        first.check_connectivity = AsyncMock(return_value=True)
+        first._make_json_request = cast(Any, blocking_request)
+
+        second = Controller.__new__(Controller)
+        second.node_id = "node-1"
+        second.worker_id = "worker-2"
+        second._lifecycle_coordinator = coordinator
+        second._lifecycle_lease_seconds = 30
+        second._lifecycle_heartbeat_tasks = {}
+        second.check_connectivity = AsyncMock(return_value=True)
+        second._make_json_request = AsyncMock()
+
+        first_update = asyncio.create_task(first.update_node())
+        await request_started.wait()
+        try:
+            with self.assertRaises(NodeAPIError) as error:
+                await second.update_node()
+            self.assertEqual(error.exception.code, 409)
+            second._make_json_request.assert_not_awaited()
+        finally:
+            finish_request.set()
+
+        self.assertIs(await first_update, response)
 
 
 if __name__ == "__main__":
