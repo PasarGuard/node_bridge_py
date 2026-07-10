@@ -358,8 +358,10 @@ class Node(PasarGuardNode):
 
     async def get_balancer_info(self, tag: str, timeout: int | None = None) -> service.BalancerInfoResponse | None:
         timeout = timeout or self._default_timeout
+        # POST (not GET): the request carries a protobuf body, which GET does not
+        # reliably support through clients and intermediaries. Matches the node.
         return await self._make_request(
-            method="GET",
+            method="POST",
             endpoint="routing/balancer",
             timeout=timeout,
             proto_message=service.BalancerInfoRequest(tag=tag),
@@ -382,7 +384,7 @@ class Node(PasarGuardNode):
     ) -> service.RouteResult | None:
         timeout = timeout or self._default_timeout
         return await self._make_request(
-            method="GET",
+            method="POST",
             endpoint="routing/test",
             timeout=timeout,
             proto_message=service.TestRouteRequest(
