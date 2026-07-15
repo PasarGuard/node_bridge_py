@@ -289,9 +289,9 @@ class Controller:
         if not version:
             return None
 
-        # Drop build metadata and pre-release suffixes
+        # Drop build metadata first, then pre-release suffixes
         cleaned = version.split("+", 1)[0]
-        cleaned = version.split("-", 1)[0]
+        cleaned = cleaned.split("-", 1)[0]
 
         try:
             return Version(cleaned)
