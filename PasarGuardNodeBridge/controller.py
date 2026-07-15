@@ -674,3 +674,24 @@ class Controller:
     async def update_geofiles(self, json: dict) -> BufferedResponse:
         """Trigger a node geofiles update via the REST API."""
         return await self._run_coordinated_update(LifecycleOperation.UPDATE_GEOFILES, "/node/geofiles", json)
+
+    async def hard_reset(self) -> BufferedResponse:
+        """Trigger a hard reset of the remote node service via the REST API.
+
+        This posts to ``/node/hard_reset`` on the management API, which
+        instructs ``node-serviced`` to run ``systemctl restart <service>``.
+        The underlying ``pg-node`` process is restarted, so the node will be
+        unreachable until it comes back up.
+
+        After the call succeeds the local health state is set to NOT_CONNECTED
+        so any subsequent operation (e.g. ``start()``) knows it must reconnect.
+
+        Raises:
+            NodeAPIError: code 503 if the management API is unreachable.
+            NodeAPIError: code 409 if another lifecycle operation is in-flight.
+            NodeAPIError: code 500 if systemctl reports a failure.
+        """
+        response = await self._run_coordinated_update(LifecycleOperation.HARD_RESET, "/node/hard_reset")
+        # The remote service has been restarted; clear local state.
+        await self.disconnect()
+        return response

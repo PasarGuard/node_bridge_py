@@ -63,6 +63,7 @@ class LifecycleOperation(str, Enum):
     UPDATE_NODE = "update_node"
     UPDATE_CORE = "update_core"
     UPDATE_GEOFILES = "update_geofiles"
+    HARD_RESET = "hard_reset"
 
 
 class LifecycleStatus(str, Enum):
