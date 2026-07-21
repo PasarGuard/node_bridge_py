@@ -334,6 +334,88 @@ class Node(PasarGuardNode):
                 )
                 return users
 
+    async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._handle_grpc_request(
+            method=self._client.ListRoutingRules,
+            request=service.Empty(),
+            timeout=timeout,
+        )
+
+    async def get_balancer_info(self, tag: str, timeout: int | None = None) -> service.BalancerInfoResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._handle_grpc_request(
+            method=self._client.GetBalancerInfo,
+            request=service.BalancerInfoRequest(tag=tag),
+            timeout=timeout,
+        )
+
+    async def test_route(
+        self,
+        inbound_tag: str = "",
+        network: str = "",
+        target_ip: str = "",
+        target_domain: str = "",
+        target_port: int = 0,
+        protocol: str = "",
+        user: str = "",
+        attributes: dict[str, str] | None = None,
+        field_selectors: list[str] | None = None,
+        publish_result: bool = False,
+        timeout: int | None = None,
+    ) -> service.RouteResult | None:
+        timeout = timeout or self._default_timeout
+        return await self._handle_grpc_request(
+            method=self._client.TestRoute,
+            request=service.TestRouteRequest(
+                inbound_tag=inbound_tag,
+                network=network,
+                target_ip=target_ip,
+                target_domain=target_domain,
+                target_port=target_port,
+                protocol=protocol,
+                user=user,
+                attributes=attributes or {},
+                field_selectors=field_selectors or [],
+                publish_result=publish_result,
+            ),
+            timeout=timeout,
+        )
+
+    async def add_routing_rule(
+        self, rule: str, should_reset: bool = False, timeout: int | None = None
+    ) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
+        # Serialize state-changing routing calls under the node lock, like the other
+        # mutating ops (start/stop/sync_users), so a rule change can't race a
+        # concurrent core restart (read-only routing methods stay lock-free).
+        async with self._node_lock:
+            return await self._handle_grpc_request(
+                method=self._client.AddRoutingRule,
+                request=service.AddRoutingRuleRequest(rule=rule, should_reset=should_reset),
+                timeout=timeout,
+            )
+
+    async def remove_routing_rule(self, rule_tag: str, timeout: int | None = None) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
+        async with self._node_lock:
+            return await self._handle_grpc_request(
+                method=self._client.RemoveRoutingRule,
+                request=service.RemoveRoutingRuleRequest(rule_tag=rule_tag),
+                timeout=timeout,
+            )
+
+    async def override_balancer_target(
+        self, balancer_tag: str, target: str, timeout: int | None = None
+    ) -> service.Empty | None:
+        timeout = timeout or self._default_timeout
+        async with self._node_lock:
+            return await self._handle_grpc_request(
+                method=self._client.OverrideBalancerTarget,
+                request=service.OverrideBalancerTargetRequest(balancer_tag=balancer_tag, target=target),
+                timeout=timeout,
+            )
+
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users via gRPC SyncUser stream. Returns failed users."""
         failed = []

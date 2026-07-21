@@ -66,6 +66,30 @@ class NodeServiceBase(abc.ABC):
     async def SyncUsersChunked(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.UsersChunk, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
         pass
 
+    @abc.abstractmethod
+    async def ListRoutingRules(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.Empty, PasarGuardNodeBridge.common.service_pb2.RoutingRulesResponse]') -> None:
+        pass
+
+    @abc.abstractmethod
+    async def GetBalancerInfo(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.BalancerInfoRequest, PasarGuardNodeBridge.common.service_pb2.BalancerInfoResponse]') -> None:
+        pass
+
+    @abc.abstractmethod
+    async def TestRoute(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.TestRouteRequest, PasarGuardNodeBridge.common.service_pb2.RouteResult]') -> None:
+        pass
+
+    @abc.abstractmethod
+    async def AddRoutingRule(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.AddRoutingRuleRequest, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
+        pass
+
+    @abc.abstractmethod
+    async def RemoveRoutingRule(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.RemoveRoutingRuleRequest, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
+        pass
+
+    @abc.abstractmethod
+    async def OverrideBalancerTarget(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.OverrideBalancerTargetRequest, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
+        pass
+
     def __mapping__(self) -> typing.Dict[str, grpclib.const.Handler]:
         return {
             '/service.NodeService/Start': grpclib.const.Handler(
@@ -144,6 +168,42 @@ class NodeServiceBase(abc.ABC):
                 self.SyncUsersChunked,
                 grpclib.const.Cardinality.STREAM_UNARY,
                 PasarGuardNodeBridge.common.service_pb2.UsersChunk,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
+            ),
+            '/service.NodeService/ListRoutingRules': grpclib.const.Handler(
+                self.ListRoutingRules,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
+                PasarGuardNodeBridge.common.service_pb2.RoutingRulesResponse,
+            ),
+            '/service.NodeService/GetBalancerInfo': grpclib.const.Handler(
+                self.GetBalancerInfo,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.BalancerInfoRequest,
+                PasarGuardNodeBridge.common.service_pb2.BalancerInfoResponse,
+            ),
+            '/service.NodeService/TestRoute': grpclib.const.Handler(
+                self.TestRoute,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.TestRouteRequest,
+                PasarGuardNodeBridge.common.service_pb2.RouteResult,
+            ),
+            '/service.NodeService/AddRoutingRule': grpclib.const.Handler(
+                self.AddRoutingRule,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.AddRoutingRuleRequest,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
+            ),
+            '/service.NodeService/RemoveRoutingRule': grpclib.const.Handler(
+                self.RemoveRoutingRule,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.RemoveRoutingRuleRequest,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
+            ),
+            '/service.NodeService/OverrideBalancerTarget': grpclib.const.Handler(
+                self.OverrideBalancerTarget,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.OverrideBalancerTargetRequest,
                 PasarGuardNodeBridge.common.service_pb2.Empty,
             ),
         }
@@ -228,5 +288,41 @@ class NodeServiceStub:
             channel,
             '/service.NodeService/SyncUsersChunked',
             PasarGuardNodeBridge.common.service_pb2.UsersChunk,
+            PasarGuardNodeBridge.common.service_pb2.Empty,
+        )
+        self.ListRoutingRules = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/ListRoutingRules',
+            PasarGuardNodeBridge.common.service_pb2.Empty,
+            PasarGuardNodeBridge.common.service_pb2.RoutingRulesResponse,
+        )
+        self.GetBalancerInfo = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/GetBalancerInfo',
+            PasarGuardNodeBridge.common.service_pb2.BalancerInfoRequest,
+            PasarGuardNodeBridge.common.service_pb2.BalancerInfoResponse,
+        )
+        self.TestRoute = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/TestRoute',
+            PasarGuardNodeBridge.common.service_pb2.TestRouteRequest,
+            PasarGuardNodeBridge.common.service_pb2.RouteResult,
+        )
+        self.AddRoutingRule = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/AddRoutingRule',
+            PasarGuardNodeBridge.common.service_pb2.AddRoutingRuleRequest,
+            PasarGuardNodeBridge.common.service_pb2.Empty,
+        )
+        self.RemoveRoutingRule = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/RemoveRoutingRule',
+            PasarGuardNodeBridge.common.service_pb2.RemoveRoutingRuleRequest,
+            PasarGuardNodeBridge.common.service_pb2.Empty,
+        )
+        self.OverrideBalancerTarget = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/OverrideBalancerTarget',
+            PasarGuardNodeBridge.common.service_pb2.OverrideBalancerTargetRequest,
             PasarGuardNodeBridge.common.service_pb2.Empty,
         )
