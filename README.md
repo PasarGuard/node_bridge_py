@@ -126,6 +126,8 @@ await node.stop()
 ### 1. Queue-Based User Updates (recommended for frequent updates)
 
 `update_user` and `update_users` enqueue users and a background worker handles retries and batching.
+If the configured per-node queue bound is reached, both methods raise
+`Bridge.UserSyncStoreFullError`; callers may retry after queued work is processed.
 
 ```python
 await node.update_user(user)
@@ -158,11 +160,86 @@ A `UserSyncStoreProtocol` implementation must provide these async methods:
 
 - `enqueue_users(node_id, users)` stores latest user payloads by email.
 - `claim_users(node_id, worker_id, limit, lease_seconds)` atomically leases work and returns `ClaimedUser` items.
+- `next_claim_delay(node_id)` returns seconds until tracked work can next be claimed, `0.0` for immediately
+  claimable work, or `None` when no work is tracked. This lets an idle worker wake after another worker's lease expires.
 - `ack_users(node_id, tokens)` removes successfully synced claims.
 - `requeue_users(node_id, claimed_users)` makes failed claims available again.
 - `clear(node_id)` clears pending and claimed updates for a node.
 
 Delivery is at-least-once. A crashed worker may cause the same latest user payload to be synced again after its lease expires, so external adapters should use atomic claim/lease operations such as Redis Lua/transactions or NATS KV revision compare-and-set.
+For compatibility, stores without `next_claim_delay` are rechecked after at most one configured lease interval, but new
+implementations should provide it so workers can preserve the normal fast idle exit when the store is truly empty.
+
+#### Coordinated Permanent User Revocation
+
+Permanent deletion requires stronger ordering than the ordinary at-least-once queue. A
+`RevocationAwareUserSyncStoreProtocol` implementation provides per-user generations, execution leases, and
+operation-owned fences. Stores without this optional capability continue to support normal updates, while calls to the
+revocation API fail closed with `NodeAPIError` code `501`.
+
+```python
+revocation_id = "delete-request-42"
+user_keys = [user.email]
+
+barrier = await node.begin_user_revocation(user_keys, revocation_id)
+users_to_remove = [removed_user] if removed_user.email in barrier.active_user_keys else []
+try:
+    if users_to_remove:
+        failed = await node.sync_users_chunked(users_to_remove, revocation_id=revocation_id)
+        if failed:
+            raise RuntimeError("revocation update did not complete")
+    await commit_database_delete()
+except BaseException:
+    users_to_restore = (
+        [authoritative_restored_user]
+        if authoritative_restored_user.email in barrier.active_user_keys
+        else []
+    )
+    if users_to_restore:
+        failed = await node.sync_users_chunked(users_to_restore, revocation_id=revocation_id)
+        if failed:
+            raise RuntimeError("authoritative restore did not complete")
+    await node.abort_user_revocation(user_keys, revocation_id)
+    raise
+else:
+    await node.finalize_user_revocation(user_keys, revocation_id)
+```
+
+`begin_user_revocation` returns `UserRevocationResult(active_user_keys, finalized_user_keys)`. Direct writes must contain
+only `active_user_keys`; already-finalized keys are idempotently skipped. It discards older pending/claimed payloads and
+waits for older in-flight user-sync leases to drain. A different operation that already owns any requested key causes
+`UserRevocationConflictError`; retry the whole operation later. This fail-fast serialization prevents one operation's
+rollback restore from racing another operation's permanent finalize.
+
+An abort must happen only after the authoritative user has been restored on the node. Abort and finalize close admission
+before draining authorized writes. A successful finalize leaves a permanent tombstone, and later aborts or stale queue
+generations cannot reopen it. Shared stores must keep these fences, generations, claims, and execution leases in the same
+atomic consistency domain. A timeout, cancellation, partial transport failure, or expired heartbeat leaves the remote
+outcome unknown; its lease is deliberately retained and revocation fails closed. Recover by calling
+`reconcile_users(authoritative_users)`: the revocation-aware store waits for live writes, replaces expired poison with a
+node-wide permit, and clears it only after the authoritative full snapshot is acknowledged. A failed reconciliation
+retains a new node-wide poison lease, so a crash cannot silently reopen revocation.
+
+Node startup and `sync_users` are full replacement snapshots, so their execution leases cover every user on the node,
+including users omitted from the request. A snapshot already in flight drains before a new fence opens. A snapshot which
+encounters a provisional fence waits for its authoritative abort/finalize outcome; permanently finalized users are then
+omitted from the request. An ambiguous snapshot timeout or cancellation retains the node-wide lease and fails every later
+write or permanent revocation on that node closed until reconciliation. `sync_users` rejects `revocation_id`; operation-
+owned removal and restore writes must use the partial `sync_users_chunked` transport and treat any returned users as a
+failure.
+
+Fences are scoped to `node_id`. A controller which adds a new node concurrently with deletion must register that node in
+the revocation topology before reading its authoritative startup snapshot; a fence on another node cannot protect it.
+
+Version `0.10.0` adds node-enforced monotonic user-sync epochs plus the required startup-snapshot, epoch-floor handshake,
+and atomic lease-narrowing methods to `RevocationAwareUserSyncStoreProtocol`. Roll out the Node binary first, but do not
+activate positive epochs yet. Then stop or drain **all** legacy Panel/Bridge workers, upgrade every shared-store adapter
+and Bridge process together, and only then resume user mutations and permanent revocation. After a Node accepts its first
+positive epoch it rejects legacy epoch-zero clients with HTTP `412` / gRPC `FailedPrecondition`; mixed old/new workers and
+rollback to Bridge `0.9` are intentionally unsupported until the Node service is fully restarted and its backend is
+recreated from an authoritative snapshot. A Bridge capability probe reads the Node's current epoch and atomically advances
+the shared allocator before granting a write lease, so a restarted worker cannot reuse a stale lower epoch. Do not run
+user sync or permanent revocation during this cutover.
 
 Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, and `update_geofiles()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
 
@@ -191,7 +268,18 @@ if state is not None:
     )
 ```
 
-A lifecycle adapter must atomically acquire/release leases and fence writes with the returned epoch. This prevents a cron status job or another worker from overwriting the result of a newer `start()`, `stop()`, or reconnect flow.
+A lifecycle adapter must atomically acquire/release leases, return `False` when heartbeat ownership is lost, and fence
+writes with the returned epoch. An expired lease is an unknown remote effect and must not be stolen. Calling
+`reconcile_lifecycle(observed_status)` is safe only after an operator has independently established that the old worker and
+request can no longer complete; a status probe alone is not such a guarantee. Reconciliation refuses to clear a still-live
+lease. Applications must not automatically reconcile a timeout and launch a competing lifecycle operation, because the
+Node management API does not yet carry a server-enforced lifecycle fencing token.
+
+The built-in lifecycle coordinator is shared only by controllers in the same Python process. Deployments with more than
+one Panel/Bridge process must inject the same durable shared adapter (for example, backed by Redis or a transactional
+database) into every controller. Adapter failures are exposed by lifecycle APIs as `NodeAPIError` with code `503`.
+`NodeLifecycleState.updated_at` is a Unix wall-clock timestamp; adapters should use a monotonic clock separately for lease
+expiry calculations and must not persist process-local monotonic values as public state.
 
 Node connection configs can also be stored through a registry protocol:
 
@@ -215,9 +303,10 @@ node = await Bridge.create_node_from_registry(
 )
 ```
 
-### 2. Direct User Sync
+### 2. Full User Snapshot Sync
 
-Use direct sync when you want explicit control in your flow.
+`sync_users` replaces the node's complete user set. Always pass the authoritative full snapshot; an empty list clears all
+users. Use `sync_users_chunked` for partial updates.
 
 ```python
 await node.sync_users([user1, user2], timeout=15)
@@ -260,6 +349,10 @@ node_ver = await node.node_version()
 core_ver = await node.core_version()
 node_ver2, core_ver2 = await node.get_versions()
 meta = await node.get_extra()
+
+# Backwards-compatible synchronous metadata attribute. Prefer get_extra() in
+# new asynchronous code.
+legacy_meta = node.extra
 ```
 
 ### 6. On-Demand Log Streaming
@@ -342,8 +435,13 @@ await node.override_balancer_target("balancer-tag", "outbound-tag")
 
 - `update_user(user)` (queued/background)
 - `update_users(users)` (queued/background)
-- `sync_users(users, flush_pending=False, timeout=None)` (direct)
-- `sync_users_chunked(users, chunk_size=100, flush_pending=False, timeout=None)` (direct streaming)
+- `begin_user_revocation(user_keys, revocation_id)` → `UserRevocationResult`
+- `abort_user_revocation(user_keys, revocation_id)` (release this provisional fence after restore)
+- `finalize_user_revocation(user_keys, revocation_id)` (commit permanent tombstones)
+- `sync_users(users, flush_pending=False, timeout=None, revocation_id=None)` (full replacement; `revocation_id` rejected)
+- `reconcile_users(users, flush_pending=False, timeout=None)` (authoritative full replacement that recovers expired/unknown sync leases)
+- `start(..., reconcile_user_sync=True)` (authoritative startup snapshot recovery after a crashed/expired writer)
+- `sync_users_chunked(users, chunk_size=100, flush_pending=False, timeout=None, revocation_id=None)` (partial streaming)
 
 ### Routing
 
@@ -376,6 +474,9 @@ try:
 except Bridge.NodeAPIError as e:
     print(e.code, e.detail)
 ```
+
+Local queue-capacity errors from `update_user` and `update_users` are surfaced
+separately as `Bridge.UserSyncStoreFullError` so callers can apply backpressure.
 
 ## Protobuf Access
 

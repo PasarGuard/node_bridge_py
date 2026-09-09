@@ -16,6 +16,7 @@ class PasarGuardNode(Controller, ABC):
         keep_alive: int = 0,
         exclude_inbounds: list[str] | None = None,
         timeout: int | None = None,
+        reconcile_user_sync: bool = False,
     ) -> service.BaseInfoResponse | None:
         raise NotImplementedError
 
@@ -57,13 +58,30 @@ class PasarGuardNode(Controller, ABC):
 
     @abstractmethod
     async def sync_users(
-        self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
+        self,
+        users: list[service.User],
+        flush_pending: bool = False,
+        timeout: int | None = None,
+        revocation_id: str | None = None,
     ) -> service.Empty | None:
         raise NotImplementedError
 
+    async def reconcile_users(
+        self,
+        users: list[service.User],
+        flush_pending: bool = False,
+        timeout: int | None = None,
+    ) -> service.Empty | None:
+        raise NodeAPIError(501, "This node transport does not support authoritative user reconciliation")
+
     @abstractmethod
     async def sync_users_chunked(
-        self, users: list[service.User], chunk_size: int = 100, flush_pending: bool = False, timeout: int | None = None
+        self,
+        users: list[service.User],
+        chunk_size: int = 100,
+        flush_pending: bool = False,
+        timeout: int | None = None,
+        revocation_id: str | None = None,
     ) -> list[service.User]:
         raise NotImplementedError
 
@@ -113,7 +131,7 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
+    async def _sync_batch_users(self, users: list[service.User], user_sync_epoch: int = 0) -> list[service.User]:
         """Sync a batch of users individually. Returns list of failed users to requeue."""
         raise NotImplementedError
 

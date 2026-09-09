@@ -10,8 +10,8 @@ from google.protobuf.message import DecodeError, Message
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientSession, buffer_response, make_timeout
 from PasarGuardNodeBridge.common import service_pb2 as service
-from PasarGuardNodeBridge.controller import Health, NodeAPIError
-from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
+from PasarGuardNodeBridge.controller import STALE_USER_SYNC_RETRY_LIMIT, Health, NodeAPIError
+from PasarGuardNodeBridge.storage import LifecycleLeaseLostError, LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url
 
 ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
@@ -168,6 +168,7 @@ class Node(PasarGuardNode):
         keep_alive: int = 0,
         exclude_inbounds: list[str] | None = None,
         timeout: int | None = None,
+        reconcile_user_sync: bool = False,
     ) -> service.BaseInfoResponse | None:
         """Start the node with proper task management"""
         exclude_inbounds = exclude_inbounds or []
@@ -177,42 +178,91 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-4, detail="Invalid node")
 
         lease = await self._acquire_lifecycle_lease(LifecycleOperation.START)
+        user_sync_lease = None
+        user_sync_heartbeat = None
+        remote_started = False
+        remote_completed = False
         try:
-            async with self._node_lock:
-                response = await self._make_request(
-                    method="POST",
-                    endpoint="start",
-                    timeout=timeout,
-                    proto_message=service.Backend(
+            requested_users = users
+            for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+                remote_started = False
+                remote_completed = False
+                if reconcile_user_sync:
+                    (
+                        filtered_users,
+                        user_sync_lease,
+                        user_sync_heartbeat,
+                    ) = await self._acquire_reconciliation_user_sync_lease(requested_users)
+                else:
+                    filtered_users, user_sync_lease, user_sync_heartbeat = await self._acquire_snapshot_user_sync_lease(
+                        requested_users
+                    )
+                try:
+                    request = service.Backend(
                         type=backend_type,
                         config=config,
-                        users=users,
+                        users=filtered_users,
                         keep_alive=keep_alive,
                         exclude_inbounds=exclude_inbounds,
-                    ),
-                    proto_response_class=service.BaseInfoResponse,
-                )
+                        user_sync_epoch=self._user_sync_epoch_for_transport(user_sync_lease),
+                    )
+                    async with self._node_lock:
+                        await self._assert_user_sync_lease_owned(user_sync_lease)
+                        capability_generation = getattr(self, "_user_sync_connection_generation", 0)
+                        remote_started = True
+                        try:
+                            response = await self._make_request(
+                                method="POST",
+                                endpoint="start",
+                                timeout=timeout,
+                                proto_message=request,
+                                proto_response_class=service.BaseInfoResponse,
+                            )
+                        except Exception as exc:
+                            if self._is_stale_user_sync_rejection(exc):
+                                remote_completed = True
+                                if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                                    continue
+                            raise
+                        remote_completed = True
 
-                if not response.started:
-                    raise NodeAPIError(500, "Failed to start the node")
+                        if not response.started:
+                            raise NodeAPIError(500, "Failed to start the node")
 
-                try:
-                    await self.connect(response.node_version, response.core_version)
-                except BaseException as e:
-                    await self.disconnect()
-                    self._handle_error(e)
+                        await self._observe_user_sync_epoch_capability(response, capability_generation)
 
-            await self._release_lifecycle_lease(
-                lease,
-                LifecycleStatus.HEALTHY,
-                desired=LifecycleStatus.HEALTHY,
-                node_version=response.node_version,
-                core_version=response.core_version,
-            )
-            return response
-        except BaseException:
-            await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.HEALTHY)
+                        try:
+                            await self.connect(response.node_version, response.core_version)
+                        except asyncio.CancelledError:
+                            await self.disconnect()
+                            raise
+                        except Exception as e:
+                            await self.disconnect()
+                            self._handle_error(e)
+
+                    await self._release_lifecycle_lease(
+                        lease,
+                        LifecycleStatus.HEALTHY,
+                        desired=LifecycleStatus.HEALTHY,
+                        node_version=response.node_version,
+                        core_version=response.core_version,
+                    )
+                    return response
+                finally:
+                    if remote_started and not remote_completed:
+                        await self._abandon_user_sync_lease(user_sync_lease, user_sync_heartbeat)
+                    else:
+                        await self._release_user_sync_lease(user_sync_lease, user_sync_heartbeat)
+                    user_sync_lease = None
+                    user_sync_heartbeat = None
+        except BaseException as exc:
+            if remote_started and (not remote_completed or isinstance(exc, LifecycleLeaseLostError)):
+                await self._stop_lifecycle_heartbeat(lease)
+            else:
+                await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.HEALTHY)
             raise
+
+        raise AssertionError("unreachable")
 
     async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
@@ -224,19 +274,11 @@ class Node(PasarGuardNode):
             lease = await self._acquire_lifecycle_lease(LifecycleOperation.STOP)
             try:
                 async with self._node_lock:
+                    await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
                     await self.disconnect()
-
-                    try:
-                        await self._make_request(method="PUT", endpoint="stop", timeout=timeout)
-                    except Exception as e:
-                        self.logger.debug(
-                            f"[{self.name}] Best-effort stop request failed | Error: {type(e).__name__} - {e!s}"
-                        )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
-                    )
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
-                await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
+                await self._stop_lifecycle_heartbeat(lease)
                 raise
         finally:
             await self._client.close()
@@ -244,9 +286,13 @@ class Node(PasarGuardNode):
 
     async def info(self, timeout: int | None = None) -> service.BaseInfoResponse | None:
         timeout = timeout or self._default_timeout
-        return await self._make_request(
+        capability_generation = getattr(self, "_user_sync_connection_generation", 0)
+        response = await self._make_request(
             method="GET", endpoint="info", timeout=timeout, proto_response_class=service.BaseInfoResponse
         )
+        if response is not None:
+            await self._observe_user_sync_epoch_capability(response, capability_generation)
+        return response
 
     async def get_system_stats(self, timeout: int | None = None) -> service.SystemStatsResponse | None:
         timeout = timeout or self._default_timeout
@@ -305,20 +351,99 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
+        self,
+        users: list[service.User],
+        flush_pending: bool = False,
+        timeout: int | None = None,
+        revocation_id: str | None = None,
     ) -> service.Empty | None:
+        if revocation_id is not None:
+            raise NodeAPIError(400, "sync_users is a full replacement; use sync_users_chunked for revocation writes")
         timeout = timeout or self._default_timeout
         if flush_pending:
             await self.flush_pending_users()
 
-        async with self._node_lock:
-            return await self._make_request(
-                method="PUT",
-                endpoint="users/sync",
-                timeout=timeout,
-                proto_message=service.Users(users=users),
-                proto_response_class=service.Empty,
-            )
+        requested_users = users
+        for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+            filtered_users, lease, heartbeat = await self._acquire_snapshot_user_sync_lease(requested_users)
+            remote_started = False
+            remote_completed = False
+            try:
+                async with self._node_lock:
+                    await self._assert_user_sync_lease_owned(lease)
+                    remote_started = True
+                    try:
+                        response = await self._make_request(
+                            method="PUT",
+                            endpoint="users/sync",
+                            timeout=timeout,
+                            proto_message=service.Users(
+                                users=filtered_users,
+                                user_sync_epoch=self._user_sync_epoch_for_transport(lease),
+                            ),
+                            proto_response_class=service.Empty,
+                        )
+                    except Exception as exc:
+                        if self._is_stale_user_sync_rejection(exc):
+                            remote_completed = True
+                            if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                                continue
+                        raise
+                    remote_completed = True
+                    return response
+            finally:
+                if remote_started and not remote_completed:
+                    await self._abandon_user_sync_lease(lease, heartbeat)
+                else:
+                    await self._release_user_sync_lease(lease, heartbeat)
+
+        raise AssertionError("unreachable")
+
+    async def reconcile_users(
+        self,
+        users: list[service.User],
+        flush_pending: bool = False,
+        timeout: int | None = None,
+    ) -> service.Empty | None:
+        """Recover expired/unknown user writes with an authoritative snapshot."""
+        timeout = timeout or self._default_timeout
+        if flush_pending:
+            await self.flush_pending_users()
+        requested_users = users
+        for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+            filtered_users, lease, heartbeat = await self._acquire_reconciliation_user_sync_lease(requested_users)
+            remote_started = False
+            remote_completed = False
+            try:
+                async with self._node_lock:
+                    await self._assert_user_sync_lease_owned(lease)
+                    remote_started = True
+                    try:
+                        response = await self._make_request(
+                            method="PUT",
+                            endpoint="users/sync",
+                            timeout=timeout,
+                            proto_message=service.Users(
+                                users=filtered_users,
+                                user_sync_epoch=self._user_sync_epoch_for_transport(lease),
+                            ),
+                            proto_response_class=service.Empty,
+                        )
+                    except Exception as exc:
+                        if self._is_stale_user_sync_rejection(exc):
+                            remote_completed = True
+                            if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                                continue
+                        raise
+                    remote_completed = True
+                    return response
+            finally:
+                if remote_started and not remote_completed:
+                    await self._abandon_user_sync_lease(lease, heartbeat)
+                else:
+                    await self._release_user_sync_lease(lease, heartbeat)
+
+        raise AssertionError("unreachable")
 
     async def sync_users_chunked(
         self,
@@ -326,6 +451,7 @@ class Node(PasarGuardNode):
         chunk_size: int = 100,
         flush_pending: bool = False,
         timeout: int | None = None,
+        revocation_id: str | None = None,
     ) -> list[service.User]:
         """Stream UsersChunk messages over HTTP/2 for large sync operations. Returns failed users."""
         if chunk_size <= 0:
@@ -335,6 +461,48 @@ class Node(PasarGuardNode):
         if flush_pending:
             await self.flush_pending_users()
 
+        for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+            lease, heartbeat = await self._acquire_direct_user_sync_lease(users, revocation_id)
+            remote_started = False
+            remote_completed = False
+            try:
+                async with self._node_lock:
+                    await self._assert_user_sync_lease_owned(lease)
+                    remote_started = True
+                    await self._sync_users_chunked_transport(
+                        users,
+                        chunk_size,
+                        timeout,
+                        self._user_sync_epoch_for_transport(lease),
+                    )
+                remote_completed = True
+                return []
+            except Exception as e:  # noqa: BLE001 - direct API reports the failed batch
+                stale_epoch = self._is_stale_user_sync_rejection(e)
+                if stale_epoch:
+                    remote_completed = True
+                    if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                        continue
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
+                )
+                return users
+            finally:
+                if remote_started and not remote_completed:
+                    await self._abandon_user_sync_lease(lease, heartbeat)
+                else:
+                    await self._release_user_sync_lease(lease, heartbeat)
+
+        raise AssertionError("unreachable")
+
+    async def _sync_users_chunked_transport(
+        self,
+        users: list[service.User],
+        chunk_size: int,
+        timeout: int,
+        user_sync_epoch: int = 0,
+    ) -> None:
         def _encode_varint(value: int) -> bytes:
             encoded = bytearray()
             while True:
@@ -348,9 +516,10 @@ class Node(PasarGuardNode):
             return bytes(encoded)
 
         async def _iter_chunks():
-            # Send a terminating empty chunk when no users are provided
             if not users:
-                chunk_bytes = self._serialize_protobuf(service.UsersChunk(index=0, last=True))
+                chunk_bytes = self._serialize_protobuf(
+                    service.UsersChunk(index=0, last=True, user_sync_epoch=user_sync_epoch)
+                )
                 yield _encode_varint(len(chunk_bytes)) + chunk_bytes
                 return
 
@@ -358,30 +527,24 @@ class Node(PasarGuardNode):
             for index, start in enumerate(range(0, total_users, chunk_size)):
                 chunk_users = users[start : start + chunk_size]
                 chunk_bytes = self._serialize_protobuf(
-                    service.UsersChunk(users=chunk_users, index=index, last=start + chunk_size >= total_users)
+                    service.UsersChunk(
+                        users=chunk_users,
+                        index=index,
+                        last=start + chunk_size >= total_users,
+                        user_sync_epoch=user_sync_epoch,
+                    )
                 )
-                # Length-prefix each protobuf chunk to preserve framing server-side
                 yield _encode_varint(len(chunk_bytes)) + chunk_bytes
 
-        async with self._node_lock:
-            try:
-                async with self._client.request(
-                    method="PUT",
-                    url="users/sync/chunked",
-                    data=_iter_chunks(),
-                    timeout=make_timeout(timeout),
-                ) as raw_response:
-                    response = await buffer_response(raw_response)
-                    response.raise_for_status()
-                    data = response.content
-                    self._deserialize_protobuf(service.Empty, data)
-                    return []
-            except Exception as e:
-                error_type = type(e).__name__
-                self.logger.warning(
-                    f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
-                )
-                return users
+        async with self._client.request(
+            method="PUT",
+            url="users/sync/chunked",
+            data=_iter_chunks(),
+            timeout=make_timeout(timeout),
+        ) as raw_response:
+            response = await buffer_response(raw_response)
+            response.raise_for_status()
+            self._deserialize_protobuf(service.Empty, response.content)
 
     async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
         timeout = timeout or self._default_timeout
@@ -478,21 +641,30 @@ class Node(PasarGuardNode):
                 proto_response_class=service.Empty,
             )
 
-    async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
+    async def _sync_batch_users(self, users: list[service.User], user_sync_epoch: int = 0) -> list[service.User]:
         """Sync users individually via PUT user/sync. Returns failed users."""
         failed = []
-        for user in users:
+        for index, user in enumerate(users):
             try:
                 await self._make_request(
                     method="PUT",
                     endpoint="user/sync",
                     timeout=self._internal_timeout,
-                    proto_message=user,
+                    proto_message=service.User(
+                        email=user.email,
+                        proxies=user.proxies,
+                        inbounds=user.inbounds,
+                        user_sync_epoch=user_sync_epoch,
+                    ),
                     proto_response_class=service.Empty,
                 )
             except Exception as e:
+                if self._is_stale_user_sync_rejection(e):
+                    raise
                 error_type = type(e).__name__
-                self.logger.warning(f"[{self.name}] Failed to sync user {user.email} | Error: {error_type} - {e!s}")
+                self.logger.warning(
+                    f"[{self.name}] Failed to sync user at batch index {index} | Error: {error_type} - {e!s}"
+                )
                 failed.append(user)
         return failed
 
@@ -634,11 +806,12 @@ class Node(PasarGuardNode):
                         pass
 
         response = None
+        stream_task = None
         try:
             self.logger.debug(f"[{self.name}] Opening on-demand log stream")
             response = await self._client.get("/logs", timeout=make_timeout(None))
-            if response.status >= 400:
-                buffered_response = await buffer_response(response)
+            if response.status >= 300:
+                buffered_response = await asyncio.wait_for(buffer_response(response), timeout=self._internal_timeout)
                 buffered_response.raise_for_status()
             self.logger.debug(f"[{self.name}] On-demand log stream opened successfully")
 
@@ -681,4 +854,9 @@ class Node(PasarGuardNode):
             # Convert to NodeAPIError
             self._handle_error(e)
         finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
             self.logger.debug(f"[{self.name}] On-demand log stream closed")

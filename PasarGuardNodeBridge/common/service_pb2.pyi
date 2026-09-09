@@ -34,28 +34,34 @@ class Empty(_message.Message):
     def __init__(self) -> None: ...
 
 class BaseInfoResponse(_message.Message):
-    __slots__ = ("started", "core_version", "node_version")
+    __slots__ = ("started", "core_version", "node_version", "user_sync_epoch_supported", "user_sync_epoch")
     STARTED_FIELD_NUMBER: _ClassVar[int]
     CORE_VERSION_FIELD_NUMBER: _ClassVar[int]
     NODE_VERSION_FIELD_NUMBER: _ClassVar[int]
+    USER_SYNC_EPOCH_SUPPORTED_FIELD_NUMBER: _ClassVar[int]
+    USER_SYNC_EPOCH_FIELD_NUMBER: _ClassVar[int]
     started: bool
     core_version: str
     node_version: str
-    def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ...) -> None: ...
+    user_sync_epoch_supported: bool
+    user_sync_epoch: int
+    def __init__(self, started: bool = ..., core_version: _Optional[str] = ..., node_version: _Optional[str] = ..., user_sync_epoch_supported: bool = ..., user_sync_epoch: _Optional[int] = ...) -> None: ...
 
 class Backend(_message.Message):
-    __slots__ = ("type", "config", "users", "keep_alive", "exclude_inbounds")
+    __slots__ = ("type", "config", "users", "keep_alive", "exclude_inbounds", "user_sync_epoch")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     USERS_FIELD_NUMBER: _ClassVar[int]
     KEEP_ALIVE_FIELD_NUMBER: _ClassVar[int]
     EXCLUDE_INBOUNDS_FIELD_NUMBER: _ClassVar[int]
+    USER_SYNC_EPOCH_FIELD_NUMBER: _ClassVar[int]
     type: BackendType
     config: str
     users: _containers.RepeatedCompositeFieldContainer[User]
     keep_alive: int
     exclude_inbounds: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ..., exclude_inbounds: _Optional[_Iterable[str]] = ...) -> None: ...
+    user_sync_epoch: int
+    def __init__(self, type: _Optional[_Union[BackendType, str]] = ..., config: _Optional[str] = ..., users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., keep_alive: _Optional[int] = ..., exclude_inbounds: _Optional[_Iterable[str]] = ..., user_sync_epoch: _Optional[int] = ...) -> None: ...
 
 class Log(_message.Message):
     __slots__ = ("detail",)
@@ -245,30 +251,36 @@ class Proxy(_message.Message):
     def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ..., wireguard: _Optional[_Union[Wireguard, _Mapping]] = ..., hysteria: _Optional[_Union[Hysteria, _Mapping]] = ...) -> None: ...
 
 class User(_message.Message):
-    __slots__ = ("email", "proxies", "inbounds")
+    __slots__ = ("email", "proxies", "inbounds", "user_sync_epoch")
     EMAIL_FIELD_NUMBER: _ClassVar[int]
     PROXIES_FIELD_NUMBER: _ClassVar[int]
     INBOUNDS_FIELD_NUMBER: _ClassVar[int]
+    USER_SYNC_EPOCH_FIELD_NUMBER: _ClassVar[int]
     email: str
     proxies: Proxy
     inbounds: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, email: _Optional[str] = ..., proxies: _Optional[_Union[Proxy, _Mapping]] = ..., inbounds: _Optional[_Iterable[str]] = ...) -> None: ...
+    user_sync_epoch: int
+    def __init__(self, email: _Optional[str] = ..., proxies: _Optional[_Union[Proxy, _Mapping]] = ..., inbounds: _Optional[_Iterable[str]] = ..., user_sync_epoch: _Optional[int] = ...) -> None: ...
 
 class Users(_message.Message):
-    __slots__ = ("users",)
+    __slots__ = ("users", "user_sync_epoch")
     USERS_FIELD_NUMBER: _ClassVar[int]
+    USER_SYNC_EPOCH_FIELD_NUMBER: _ClassVar[int]
     users: _containers.RepeatedCompositeFieldContainer[User]
-    def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ...) -> None: ...
+    user_sync_epoch: int
+    def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., user_sync_epoch: _Optional[int] = ...) -> None: ...
 
 class UsersChunk(_message.Message):
-    __slots__ = ("users", "index", "last")
+    __slots__ = ("users", "index", "last", "user_sync_epoch")
     USERS_FIELD_NUMBER: _ClassVar[int]
     INDEX_FIELD_NUMBER: _ClassVar[int]
     LAST_FIELD_NUMBER: _ClassVar[int]
+    USER_SYNC_EPOCH_FIELD_NUMBER: _ClassVar[int]
     users: _containers.RepeatedCompositeFieldContainer[User]
     index: int
     last: bool
-    def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., index: _Optional[int] = ..., last: bool = ...) -> None: ...
+    user_sync_epoch: int
+    def __init__(self, users: _Optional[_Iterable[_Union[User, _Mapping]]] = ..., index: _Optional[int] = ..., last: bool = ..., user_sync_epoch: _Optional[int] = ...) -> None: ...
 
 class RoutingRule(_message.Message):
     __slots__ = ("outbound_tag", "rule_tag")

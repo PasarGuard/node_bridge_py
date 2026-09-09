@@ -29,7 +29,7 @@ class BufferedResponse:
         return json.loads(self.text)
 
     def raise_for_status(self) -> None:
-        if 400 <= self.status_code:
+        if 300 <= self.status_code:
             raise BufferedStatusError(self)
 
 
@@ -90,10 +90,15 @@ class LazyClientSession:
         return self._session
 
     def request(self, *args, **kwargs):
+        # aiohttp follows redirects by default and preserves custom headers such
+        # as x-api-key across origins. Node API calls must stay pinned to the
+        # configured origin.
+        kwargs["allow_redirects"] = False
         return _LazyRequestContext(self, args, kwargs)
 
     async def get(self, *args, **kwargs) -> aiohttp.ClientResponse:
         session = await self._get_session()
+        kwargs["allow_redirects"] = False
         return await session.get(*args, **kwargs)
 
     async def close(self) -> None:

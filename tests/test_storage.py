@@ -1,22 +1,59 @@
 import asyncio
+import time
 import unittest
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from PasarGuardNodeBridge.common.service_pb2 import User
 from PasarGuardNodeBridge.controller import Controller, NodeAPIError
 from PasarGuardNodeBridge.storage import (
+    ClaimedUser,
     InMemoryNodeLifecycleCoordinator,
     InMemoryNodeRegistry,
     InMemoryUserSyncStore,
+    LifecycleLease,
+    LifecycleLeaseLostError,
     LifecycleOperation,
     LifecycleStatus,
     NodeConfig,
     NodeLifecycleState,
+    UserSyncStoreFullError,
 )
 
 
 class InMemoryUserSyncStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execution_epochs_are_monotonic_and_survive_narrowing(self):
+        store = InMemoryUserSyncStore()
+        first = await store.acquire_user_sync_lease("node-1", "worker-1", ["a@example.com", "b@example.com"], 30)
+        narrowed = await store.retain_user_sync_lease_keys(first, ["a@example.com"])
+        self.assertEqual(narrowed.epoch, first.epoch)
+        await store.release_user_sync_lease(narrowed)
+
+        second = (await store.acquire_startup_user_sync_lease("node-1", "worker-2", ["a@example.com"], 30)).lease
+        self.assertGreater(second.epoch, first.epoch)
+        await store.release_user_sync_lease(second)
+
+        other_node = await store.acquire_user_sync_lease("node-2", "worker-3", ["a@example.com"], 30)
+        self.assertEqual(other_node.epoch, 1)
+        await store.release_user_sync_lease(other_node)
+
+    async def test_snapshot_reads_do_not_allocate_revocation_state_for_unseen_users(self):
+        store = InMemoryUserSyncStore()
+
+        startup = await store.acquire_startup_user_sync_lease(
+            "node-1", "worker-1", [f"user-{index}@example.com" for index in range(100)], 30
+        )
+
+        self.assertNotIn("node-1", store._revocations)
+        await store.release_user_sync_lease(startup.lease)
+
+        recovery = await store.acquire_user_sync_reconciliation_lease(
+            "node-1", "worker-2", [f"other-{index}@example.com" for index in range(100)], 30
+        )
+
+        self.assertNotIn("node-1", store._revocations)
+        await store.release_user_sync_lease(recovery.lease)
+
     async def test_enqueue_claim_ack_removes_user(self):
         store = InMemoryUserSyncStore()
         await store.enqueue_users("node-1", [User(email="a@example.com")])
@@ -60,6 +97,19 @@ class InMemoryUserSyncStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item.user.email for item in claimed_again], ["a@example.com"])
 
+    async def test_requeue_ignores_acknowledged_or_unknown_tokens(self):
+        store = InMemoryUserSyncStore()
+        await store.enqueue_users("node-1", [User(email="acked@example.com")])
+        claimed = await store.claim_users("node-1", "worker-1", limit=10, lease_seconds=30)
+        await store.ack_users("node-1", [claimed[0].token])
+
+        await store.requeue_users(
+            "node-1",
+            [claimed[0], ClaimedUser(token="unknown", user=User(email="injected@example.com"))],
+        )
+
+        self.assertEqual(await store.claim_users("node-1", "worker-2", limit=10, lease_seconds=30), [])
+
     async def test_expired_lease_becomes_claimable(self):
         store = InMemoryUserSyncStore()
         await store.enqueue_users("node-1", [User(email="a@example.com")])
@@ -68,6 +118,42 @@ class InMemoryUserSyncStoreTests(unittest.IsolatedAsyncioTestCase):
         claimed_again = await store.claim_users("node-1", "worker-2", limit=10, lease_seconds=30)
 
         self.assertEqual([item.user.email for item in claimed_again], ["a@example.com"])
+
+    async def test_next_claim_delay_distinguishes_empty_pending_and_leased_work(self):
+        store = InMemoryUserSyncStore()
+
+        self.assertIsNone(await store.next_claim_delay("node-1"))
+
+        await store.enqueue_users("node-1", [User(email="a@example.com")])
+        self.assertEqual(await store.next_claim_delay("node-1"), 0.0)
+
+        with patch("PasarGuardNodeBridge.storage.time.monotonic", side_effect=[100.0, 100.025]):
+            await store.claim_users("node-1", "worker-1", limit=10, lease_seconds=0.1)
+            delay = await store.next_claim_delay("node-1")
+        self.assertIsNotNone(delay)
+        self.assertAlmostEqual(delay, 0.075)
+
+    async def test_enqueue_rejects_work_above_per_node_bound_without_partial_write(self):
+        store = InMemoryUserSyncStore(max_pending_users_per_node=1)
+        await store.enqueue_users("node-1", [User(email="a@example.com")])
+
+        with self.assertRaises(UserSyncStoreFullError):
+            await store.enqueue_users("node-1", [User(email="a@example.com"), User(email="b@example.com")])
+
+        claimed = await store.claim_users("node-1", "worker-1", limit=10, lease_seconds=30)
+        self.assertEqual([item.user.email for item in claimed], ["a@example.com"])
+
+    async def test_claimed_users_count_toward_per_node_bound(self):
+        store = InMemoryUserSyncStore(max_pending_users_per_node=1)
+        await store.enqueue_users("node-1", [User(email="a@example.com")])
+        await store.claim_users("node-1", "worker-1", limit=10, lease_seconds=30)
+
+        with self.assertRaises(UserSyncStoreFullError):
+            await store.enqueue_users("node-1", [User(email="b@example.com")])
+
+    def test_non_positive_per_node_bound_is_rejected(self):
+        with self.assertRaises(ValueError):
+            InMemoryUserSyncStore(max_pending_users_per_node=0)
 
 
 class InMemoryNodeRegistryTests(unittest.IsolatedAsyncioTestCase):
@@ -91,6 +177,17 @@ class InMemoryNodeRegistryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_public_state_uses_wall_clock_timestamp(self):
+        coordinator = InMemoryNodeLifecycleCoordinator()
+        before = time.time()
+
+        lease = await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.START, 30)
+        state = await coordinator.get_state("node-1")
+
+        self.assertIsNotNone(lease)
+        self.assertGreaterEqual(state.updated_at, before)
+        self.assertLessEqual(state.updated_at, time.time())
+
     async def test_lifecycle_lease_is_exclusive(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
 
@@ -122,12 +219,16 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.owner, None)
         self.assertEqual(state.node_version, "0.2.0")
 
-    async def test_stale_observed_update_is_ignored(self):
+    async def test_expired_lease_requires_reconciliation_before_new_operation(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
         first = await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.START, 0.001)
         await asyncio.sleep(0.01)
         second = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.STOP, 30)
         self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+        self.assertTrue(await coordinator.reconcile("node-1", LifecycleStatus.HEALTHY))
+        second = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.STOP, 30)
         self.assertIsNotNone(second)
 
         await coordinator.update_observed("node-1", LifecycleStatus.BROKEN, expected_epoch=first.epoch)
@@ -136,15 +237,32 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.epoch, second.epoch)
         self.assertNotEqual(state.observed, LifecycleStatus.BROKEN)
 
-    async def test_expired_lifecycle_lease_can_be_reacquired(self):
+    async def test_active_lifecycle_lease_cannot_be_reconciled(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
-        await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.RECONNECT, 0)
-        await asyncio.sleep(0.01)
+        await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.RECONNECT, 30)
 
-        lease = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.RECONNECT, 30)
+        self.assertFalse(await coordinator.reconcile("node-1", LifecycleStatus.HEALTHY))
+        self.assertIsNone(await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.RECONNECT, 30))
 
-        self.assertIsNotNone(lease)
-        self.assertEqual(lease.worker_id, "worker-2")
+    async def test_controller_detects_lifecycle_heartbeat_ownership_loss(self):
+        controller = Controller.__new__(Controller)
+        controller.node_id = "node-1"
+        controller._lifecycle_lease_seconds = 0.001
+        controller._lifecycle_coordinator = cast(
+            Any,
+            type("LostCoordinator", (), {"heartbeat": AsyncMock(return_value=False)})(),
+        )
+        lease = LifecycleLease(
+            node_id="node-1",
+            worker_id="worker-1",
+            operation=LifecycleOperation.START,
+            token="lost-token",
+            epoch=1,
+            lease_seconds=0.001,
+        )
+
+        with self.assertRaises(LifecycleLeaseLostError):
+            await controller._heartbeat_lifecycle_lease(lease)
 
     async def test_node_update_is_exclusive_across_controllers(self):
         coordinator = InMemoryNodeLifecycleCoordinator()

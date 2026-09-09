@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
@@ -11,8 +11,8 @@ from python_socks.async_.asyncio import Proxy
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
-from PasarGuardNodeBridge.controller import Health, NodeAPIError
-from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
+from PasarGuardNodeBridge.controller import STALE_USER_SYNC_RETRY_LIMIT, Health, NodeAPIError
+from PasarGuardNodeBridge.storage import LifecycleLeaseLostError, LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
 
@@ -139,6 +139,18 @@ class Node(PasarGuardNode):
         except Exception as e:
             self._handle_error(e)
 
+    @asynccontextmanager
+    async def _open_grpc_stream(self, method, timeout: float):
+        """Enter a grpclib stream context with a bounded establishment time."""
+        stack = AsyncExitStack()
+        try:
+            stream = await asyncio.wait_for(
+                stack.enter_async_context(method.open(metadata=self._metadata)), timeout=timeout
+            )
+            yield stream
+        finally:
+            await asyncio.wait_for(stack.aclose(), timeout=timeout)
+
     async def start(
         self,
         config: str,
@@ -147,6 +159,7 @@ class Node(PasarGuardNode):
         keep_alive: int = 0,
         exclude_inbounds: list[str] | None = None,
         timeout: int | None = None,
+        reconcile_user_sync: bool = False,
     ) -> service.BaseInfoResponse | None:
         """Start the node with proper task management"""
         exclude_inbounds = exclude_inbounds or []
@@ -155,39 +168,87 @@ class Node(PasarGuardNode):
         if health is Health.INVALID:
             raise NodeAPIError(code=-4, detail="Invalid node")
 
-        req = service.Backend(
-            type=backend_type, config=config, users=users, keep_alive=keep_alive, exclude_inbounds=exclude_inbounds
-        )
-
         lease = await self._acquire_lifecycle_lease(LifecycleOperation.START)
+        user_sync_lease = None
+        user_sync_heartbeat = None
+        remote_started = False
+        remote_completed = False
         try:
-            async with self._node_lock:
-                info: service.BaseInfoResponse = await self._handle_grpc_request(
-                    method=self._client.Start,
-                    request=req,
-                    timeout=timeout,
-                )
-
-                if not info.started:
-                    raise NodeAPIError(500, "Failed to start the node")
-
+            requested_users = users
+            for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+                remote_started = False
+                remote_completed = False
+                if reconcile_user_sync:
+                    (
+                        filtered_users,
+                        user_sync_lease,
+                        user_sync_heartbeat,
+                    ) = await self._acquire_reconciliation_user_sync_lease(requested_users)
+                else:
+                    filtered_users, user_sync_lease, user_sync_heartbeat = await self._acquire_snapshot_user_sync_lease(
+                        requested_users
+                    )
                 try:
-                    await self.connect(info.node_version, info.core_version)
-                except Exception as e:
-                    await self.disconnect()
-                    self._handle_error(e)
+                    req = service.Backend(
+                        type=backend_type,
+                        config=config,
+                        users=filtered_users,
+                        keep_alive=keep_alive,
+                        exclude_inbounds=exclude_inbounds,
+                        user_sync_epoch=self._user_sync_epoch_for_transport(user_sync_lease),
+                    )
+                    async with self._node_lock:
+                        await self._assert_user_sync_lease_owned(user_sync_lease)
+                        capability_generation = getattr(self, "_user_sync_connection_generation", 0)
+                        remote_started = True
+                        try:
+                            info: service.BaseInfoResponse = await self._handle_grpc_request(
+                                method=self._client.Start,
+                                request=req,
+                                timeout=timeout,
+                            )
+                        except Exception as exc:
+                            if self._is_stale_user_sync_rejection(exc):
+                                remote_completed = True
+                                if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                                    continue
+                            raise
+                        remote_completed = True
 
-                await self._release_lifecycle_lease(
-                    lease,
-                    LifecycleStatus.HEALTHY,
-                    desired=LifecycleStatus.HEALTHY,
-                    node_version=info.node_version,
-                    core_version=info.core_version,
-                )
-                return info
-        except BaseException:
-            await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.HEALTHY)
+                        if not info.started:
+                            raise NodeAPIError(500, "Failed to start the node")
+
+                        await self._observe_user_sync_epoch_capability(info, capability_generation)
+
+                        try:
+                            await self.connect(info.node_version, info.core_version)
+                        except Exception as e:
+                            await self.disconnect()
+                            self._handle_error(e)
+
+                        await self._release_lifecycle_lease(
+                            lease,
+                            LifecycleStatus.HEALTHY,
+                            desired=LifecycleStatus.HEALTHY,
+                            node_version=info.node_version,
+                            core_version=info.core_version,
+                        )
+                        return info
+                finally:
+                    if remote_started and not remote_completed:
+                        await self._abandon_user_sync_lease(user_sync_lease, user_sync_heartbeat)
+                    else:
+                        await self._release_user_sync_lease(user_sync_lease, user_sync_heartbeat)
+                    user_sync_lease = None
+                    user_sync_heartbeat = None
+        except BaseException as exc:
+            if remote_started and (not remote_completed or isinstance(exc, LifecycleLeaseLostError)):
+                await self._stop_lifecycle_heartbeat(lease)
+            else:
+                await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.HEALTHY)
             raise
+
+        raise AssertionError("unreachable")
 
     async def stop(self, timeout: int | None = None) -> None:
         """Stop the node with proper cleanup"""
@@ -199,34 +260,30 @@ class Node(PasarGuardNode):
             lease = await self._acquire_lifecycle_lease(LifecycleOperation.STOP)
             try:
                 async with self._node_lock:
-                    await self.disconnect()
-
-                    try:
-                        await self._handle_grpc_request(
-                            method=self._client.Stop,
-                            request=service.Empty(),
-                            timeout=timeout,
-                        )
-                    except Exception as e:
-                        self.logger.debug(
-                            f"[{self.name}] Best-effort Stop request failed | Error: {type(e).__name__} - {e!s}"
-                        )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
+                    await self._handle_grpc_request(
+                        method=self._client.Stop,
+                        request=service.Empty(),
+                        timeout=timeout,
                     )
+                    await self.disconnect()
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
-                await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
+                await self._stop_lifecycle_heartbeat(lease)
                 raise
         finally:
             await self._json_client.close()
 
     async def info(self, timeout: int | None = None) -> service.BaseInfoResponse | None:
         timeout = timeout or self._default_timeout
-        return await self._handle_grpc_request(
+        capability_generation = getattr(self, "_user_sync_connection_generation", 0)
+        response = await self._handle_grpc_request(
             method=self._client.GetBaseInfo,
             request=service.Empty(),
             timeout=timeout,
         )
+        if response is not None:
+            await self._observe_user_sync_epoch_capability(response, capability_generation)
+        return response
 
     async def get_system_stats(self, timeout: int | None = None) -> service.SystemStatsResponse | None:
         timeout = timeout or self._default_timeout
@@ -281,18 +338,95 @@ class Node(PasarGuardNode):
         )
 
     async def sync_users(
-        self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
+        self,
+        users: list[service.User],
+        flush_pending: bool = False,
+        timeout: int | None = None,
+        revocation_id: str | None = None,
     ) -> service.Empty | None:
+        if revocation_id is not None:
+            raise NodeAPIError(400, "sync_users is a full replacement; use sync_users_chunked for revocation writes")
         timeout = timeout or self._default_timeout
         if flush_pending:
             await self.flush_pending_users()
 
-        async with self._node_lock:
-            return await self._handle_grpc_request(
-                method=self._client.SyncUsers,
-                request=service.Users(users=users),
-                timeout=timeout,
-            )
+        requested_users = users
+        for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+            filtered_users, lease, heartbeat = await self._acquire_snapshot_user_sync_lease(requested_users)
+            remote_started = False
+            remote_completed = False
+            try:
+                async with self._node_lock:
+                    await self._assert_user_sync_lease_owned(lease)
+                    remote_started = True
+                    try:
+                        response = await self._handle_grpc_request(
+                            method=self._client.SyncUsers,
+                            request=service.Users(
+                                users=filtered_users,
+                                user_sync_epoch=self._user_sync_epoch_for_transport(lease),
+                            ),
+                            timeout=timeout,
+                        )
+                    except Exception as exc:
+                        if self._is_stale_user_sync_rejection(exc):
+                            remote_completed = True
+                            if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                                continue
+                        raise
+                    remote_completed = True
+                    return response
+            finally:
+                if remote_started and not remote_completed:
+                    await self._abandon_user_sync_lease(lease, heartbeat)
+                else:
+                    await self._release_user_sync_lease(lease, heartbeat)
+
+        raise AssertionError("unreachable")
+
+    async def reconcile_users(
+        self,
+        users: list[service.User],
+        flush_pending: bool = False,
+        timeout: int | None = None,
+    ) -> service.Empty | None:
+        """Recover expired/unknown user writes with an authoritative snapshot."""
+        timeout = timeout or self._default_timeout
+        if flush_pending:
+            await self.flush_pending_users()
+        requested_users = users
+        for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+            filtered_users, lease, heartbeat = await self._acquire_reconciliation_user_sync_lease(requested_users)
+            remote_started = False
+            remote_completed = False
+            try:
+                async with self._node_lock:
+                    await self._assert_user_sync_lease_owned(lease)
+                    remote_started = True
+                    try:
+                        response = await self._handle_grpc_request(
+                            method=self._client.SyncUsers,
+                            request=service.Users(
+                                users=filtered_users,
+                                user_sync_epoch=self._user_sync_epoch_for_transport(lease),
+                            ),
+                            timeout=timeout,
+                        )
+                    except Exception as exc:
+                        if self._is_stale_user_sync_rejection(exc):
+                            remote_completed = True
+                            if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                                continue
+                        raise
+                    remote_completed = True
+                    return response
+            finally:
+                if remote_started and not remote_completed:
+                    await self._abandon_user_sync_lease(lease, heartbeat)
+                else:
+                    await self._release_user_sync_lease(lease, heartbeat)
+
+        raise AssertionError("unreachable")
 
     async def sync_users_chunked(
         self,
@@ -300,6 +434,7 @@ class Node(PasarGuardNode):
         chunk_size: int = 100,
         flush_pending: bool = False,
         timeout: int | None = None,
+        revocation_id: str | None = None,
     ) -> list[service.User]:
         """Send users via the client-streaming SyncUsersChunked RPC. Returns failed users."""
         if chunk_size <= 0:
@@ -309,33 +444,73 @@ class Node(PasarGuardNode):
         if flush_pending:
             await self.flush_pending_users()
 
-        async with self._node_lock:
+        for attempt in range(STALE_USER_SYNC_RETRY_LIMIT + 1):
+            lease, heartbeat = await self._acquire_direct_user_sync_lease(users, revocation_id)
+            remote_started = False
+            remote_completed = False
             try:
-                async with self._client.SyncUsersChunked.open(metadata=self._metadata) as stream:
-                    if not users:
-                        await asyncio.wait_for(
-                            stream.send_message(service.UsersChunk(index=0, last=True)),
-                            timeout=self._internal_timeout,
-                        )
-                    else:
-                        total_users = len(users)
-                        for index, start in enumerate(range(0, total_users, chunk_size)):
-                            chunk_users = users[start : start + chunk_size]
-                            is_last = start + chunk_size >= total_users
-                            await asyncio.wait_for(
-                                stream.send_message(service.UsersChunk(users=chunk_users, index=index, last=is_last)),
-                                timeout=self._internal_timeout,
-                            )
-
-                    await stream.end()
-                    await asyncio.wait_for(stream.recv_message(), timeout=timeout)
-                    return []
-            except Exception as e:
+                async with self._node_lock:
+                    await self._assert_user_sync_lease_owned(lease)
+                    remote_started = True
+                    await self._sync_users_chunked_transport(
+                        users,
+                        chunk_size,
+                        timeout,
+                        self._user_sync_epoch_for_transport(lease),
+                    )
+                remote_completed = True
+                return []
+            except Exception as e:  # noqa: BLE001 - direct API reports the failed batch
+                stale_epoch = self._is_stale_user_sync_rejection(e)
+                if stale_epoch:
+                    remote_completed = True
+                    if attempt < STALE_USER_SYNC_RETRY_LIMIT:
+                        continue
                 error_type = type(e).__name__
                 self.logger.warning(
                     f"[{self.name}] Chunked gRPC sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
                 )
                 return users
+            finally:
+                if remote_started and not remote_completed:
+                    await self._abandon_user_sync_lease(lease, heartbeat)
+                else:
+                    await self._release_user_sync_lease(lease, heartbeat)
+
+        raise AssertionError("unreachable")
+
+    async def _sync_users_chunked_transport(
+        self,
+        users: list[service.User],
+        chunk_size: int,
+        timeout: int,
+        user_sync_epoch: int = 0,
+    ) -> None:
+        async with self._open_grpc_stream(self._client.SyncUsersChunked, timeout) as stream:
+            if not users:
+                await asyncio.wait_for(
+                    stream.send_message(service.UsersChunk(index=0, last=True, user_sync_epoch=user_sync_epoch)),
+                    timeout=self._internal_timeout,
+                )
+            else:
+                total_users = len(users)
+                for index, start in enumerate(range(0, total_users, chunk_size)):
+                    chunk_users = users[start : start + chunk_size]
+                    is_last = start + chunk_size >= total_users
+                    await asyncio.wait_for(
+                        stream.send_message(
+                            service.UsersChunk(
+                                users=chunk_users,
+                                index=index,
+                                last=is_last,
+                                user_sync_epoch=user_sync_epoch,
+                            )
+                        ),
+                        timeout=self._internal_timeout,
+                    )
+
+            await asyncio.wait_for(stream.end(), timeout=timeout)
+            await asyncio.wait_for(stream.recv_message(), timeout=timeout)
 
     async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
         timeout = timeout or self._default_timeout
@@ -419,22 +594,39 @@ class Node(PasarGuardNode):
                 timeout=timeout,
             )
 
-    async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
+    async def _sync_batch_users(self, users: list[service.User], user_sync_epoch: int = 0) -> list[service.User]:
         """Sync users via gRPC SyncUser stream. Returns failed users."""
         failed = []
         try:
-            async with self._client.SyncUser.open(metadata=self._metadata) as stream:
-                for user in users:
+            async with self._open_grpc_stream(self._client.SyncUser, self._internal_timeout) as stream:
+                for index, user in enumerate(users):
                     try:
-                        await asyncio.wait_for(stream.send_message(user), timeout=self._internal_timeout)
+                        await asyncio.wait_for(
+                            stream.send_message(
+                                service.User(
+                                    email=user.email,
+                                    proxies=user.proxies,
+                                    inbounds=user.inbounds,
+                                    user_sync_epoch=user_sync_epoch,
+                                )
+                            ),
+                            timeout=self._internal_timeout,
+                        )
                     except Exception as e:
+                        if self._is_stale_user_sync_rejection(e):
+                            raise
                         error_type = type(e).__name__
                         self.logger.warning(
-                            f"[{self.name}] Failed to sync user {user.email} | Error: {error_type} - {e!s}"
+                            f"[{self.name}] Failed to sync user at batch index {index} | Error: {error_type} - {e!s}"
                         )
-                        failed.append(user)
-                await stream.end()
+                        # A send failure leaves the stream unusable. Account for
+                        # the remaining users without retrying the broken stream.
+                        failed.extend(users[index:])
+                        return failed
+                await asyncio.wait_for(stream.end(), timeout=self._internal_timeout)
         except Exception as e:
+            if self._is_stale_user_sync_rejection(e):
+                raise
             # Stream-level failure - all users failed
             error_type = type(e).__name__
             self.logger.error(f"[{self.name}] Stream failed | Error: {error_type} - {e!s}")

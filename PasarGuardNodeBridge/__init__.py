@@ -12,10 +12,10 @@ Features:
 - Extensible with custom metadata via the `extra` argument
 
 Author: PasarGuard
-Version: 0.9.1
+Version: 0.10.0
 """
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 __author__ = "PasarGuard"
 
 
@@ -31,12 +31,20 @@ from PasarGuardNodeBridge.storage import (
     InMemoryNodeRegistry,
     InMemoryUserSyncStore,
     LifecycleLease,
+    LifecycleLeaseLostError,
     LifecycleOperation,
     LifecycleStatus,
     NodeConfig,
     NodeLifecycleCoordinatorProtocol,
     NodeLifecycleState,
     NodeRegistryProtocol,
+    RevocationAwareUserSyncStoreProtocol,
+    StartupUserSyncLease,
+    UserRevocationConflictError,
+    UserRevocationResult,
+    UserSyncLease,
+    UserSyncLeaseLostError,
+    UserSyncStoreFullError,
     UserSyncStoreProtocol,
 )
 from PasarGuardNodeBridge.utils import create_proxy, create_user
@@ -161,6 +169,7 @@ __all__ = [
     "InMemoryNodeRegistry",
     "InMemoryUserSyncStore",
     "LifecycleLease",
+    "LifecycleLeaseLostError",
     "LifecycleOperation",
     "LifecycleStatus",
     "NodeAPIError",
@@ -170,6 +179,13 @@ __all__ = [
     "NodeRegistryProtocol",
     "NodeType",
     "PasarGuardNode",
+    "RevocationAwareUserSyncStoreProtocol",
+    "StartupUserSyncLease",
+    "UserRevocationConflictError",
+    "UserRevocationResult",
+    "UserSyncLease",
+    "UserSyncLeaseLostError",
+    "UserSyncStoreFullError",
     "UserSyncStoreProtocol",
     "create_node",
     "create_node_from_config",
