@@ -127,6 +127,22 @@ await node.stop()
 
 `update_user` and `update_users` enqueue users and a background worker handles retries and batching.
 
+The worker claims at most `sync_batch_size` users per delivery (default: 100). Nodes
+supporting chunked sync (`>=0.2.0`) use that transport even for small updates;
+older nodes retain the per-user transport. `sync_chunk_size` controls the number
+of users per stream message (default: 100). Both options are positive integers
+accepted by `create_node(...)` and `create_node_from_config(..., **runtime_overrides)`.
+
+`sync_lease_seconds` (default: 30) bounds the entire queued delivery, including
+storage reads, an optional resolver, waiting for the transport lock, and sending
+all chunks. Delivery is cancelled before the lease expires. Failed deliveries
+and storage errors retry with exponential backoff up to 30 seconds.
+
+`disconnect()` stops this controller's worker and preserves shared queued work.
+`connect()` wakes the worker to recover it. An external producer that writes
+directly to the store should also notify a healthy controller with
+`await node.wake_sync_worker()`; an idle controller is not a permanent queue poller.
+
 ```python
 await node.update_user(user)
 
@@ -163,6 +179,77 @@ A `UserSyncStoreProtocol` implementation must provide these async methods:
 - `clear(node_id)` clears pending and claimed updates for a node.
 
 Delivery is at-least-once. A crashed worker may cause the same latest user payload to be synced again after its lease expires, so external adapters should use atomic claim/lease operations such as Redis Lua/transactions or NATS KV revision compare-and-set.
+
+Claims must exclude concurrent delivery of the same email until release or lease
+expiry. Acknowledging an older revision must preserve a newer queued update;
+requeuing an expired, cleared or already acknowledged token must not recreate
+its old payload. The default store implements these rules and copies protobuf
+messages so caller mutations cannot change queued work. An optional
+`has_pending(node_id) -> bool` should include leased work, allowing the worker to
+keep polling until it can recover an abandoned lease. Without this optional
+method, the worker polls through a lease recovery window after reconnect or a
+storage failure.
+
+Adapters that track uncertain acknowledgements may return the affected emails
+from `ack_users`; such adapters must also provide `request_refresh(node_id,
+emails)` to durably request delivery of current application state. An optional
+`refresh_claimed(node_id, claimed_users)` can similarly replace work delivered
+across a full-sync fence with refresh markers. Without that hook, the worker
+requeues those claims using the store's normal revision checks.
+
+Cancellation limits how long this client sends a leased batch. It cannot undo a
+request that a remote server has already accepted, or provide exactly-once
+delivery. Process-local storage does not survive process termination; use a
+durable shared store when that is required.
+
+#### Resolve queued users from current application state
+
+Applications can pass `user_sync_resolver=resolve_users` when constructing a
+node. This optional async callback receives `(node_id, emails)` and returns one
+current protobuf `User` for each requested email immediately before delivery.
+The library does not access an application database. Return an explicit removal
+payload, as appropriate for the node backend, for a deleted user. A missing email
+or callback failure retries the batch without sending stale fallback data.
+
+#### Coordinate full snapshots with background updates
+
+Use a deferred loader when a full snapshot must coexist with queued updates:
+
+```python
+async def load_users():
+    return await application.load_current_node_users(node.node_id)
+
+await node.sync_users_from_source(load_users, timeout=30)
+```
+
+This acquires a shared full-sync fence, waits for already claimed deliveries to
+finish, captures queued revisions, then calls the loader and sends the snapshot.
+Only a successful snapshot retires captured revisions. Updates queued during
+the snapshot remain available for subsequent delta delivery. Failures retain
+queued work, and loss of the renewable fence aborts the operation. A competing
+full sync receives `NodeAPIError(409)`.
+
+The default in-memory store supports this operation across controllers in one
+process. External stores must implement `SnapshotUserSyncStoreProtocol` with
+atomic `begin_full_sync`, `renew_full_sync`, `end_full_sync`, `fence_state`,
+`capture_queued` and `retire_captured` methods. A fence has an owner token, an
+expiry and a monotonically increasing generation. Claims must be blocked while
+it is active. Captures return pending revisions and the number of live claims;
+retirement removes only matching revisions. Stale owners cannot renew or release
+a replacement fence. All controllers sharing a store must honor this contract.
+Stores implementing only `UserSyncStoreProtocol` retain the queue API, but the
+new snapshot helper rejects them instead of silently using a local lock.
+
+For custom orchestration, `full_sync_fence()`, `capture_queued_work()` and
+`retire_queued_work(captured)` expose the same steps. Keep capture, the authoritative
+read, transmission and retirement inside the fence; call the yielded hold's
+`check()` before transmission and retirement. Prefer `sync_users_from_source()`
+unless custom orchestration is necessary.
+
+Existing direct `sync_users(...)` and `sync_users_chunked(...)` retain their
+behavior. Their explicit `flush_pending=True` option clears queued work before
+sending; use `sync_users_from_source()` when pending updates must survive a failed
+full sync. `flush_pending_users()` remains an explicit queue discard operation.
 
 Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, and `update_geofiles()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
 

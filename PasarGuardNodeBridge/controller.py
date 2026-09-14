@@ -2,6 +2,8 @@ import asyncio
 import logging
 import math
 import ssl
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from enum import IntEnum
 from json import JSONDecodeError
 from uuid import UUID
@@ -51,6 +53,19 @@ class Health(IntEnum):
     INVALID = 3
 
 
+class FullSyncHold:
+    """Ownership check for a renewable full-sync lease."""
+
+    def __init__(self, owner: asyncio.Task, until: float):
+        self.owner = owner
+        self.until = until
+        self.lost = False
+
+    def check(self) -> None:
+        if self.lost or asyncio.get_running_loop().time() >= self.until:
+            raise NodeAPIError(409, "Full user sync lease was lost")
+
+
 class Controller:
     def __init__(
         self,
@@ -70,7 +85,21 @@ class Controller:
         sync_lease_seconds: float = 30.0,
         lifecycle_coordinator: NodeLifecycleCoordinatorProtocol | None = None,
         lifecycle_lease_seconds: float = 60.0,
+        sync_batch_size: int = 100,
+        sync_chunk_size: int = 100,
+        user_sync_resolver: Callable[[str, list[str]], Awaitable[list[User]]] | None = None,
     ):
+        for option, value in (("sync_poll_interval", sync_poll_interval), ("sync_lease_seconds", sync_lease_seconds)):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{option} must be finite and positive")
+        for option, value in (("sync_batch_size", sync_batch_size), ("sync_chunk_size", sync_chunk_size)):
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{option} must be a positive integer")
+        self._sync_batch_size = sync_batch_size
+        self._sync_chunk_size = sync_chunk_size
+        self._user_sync_resolver = user_sync_resolver
+        self._claim_generation = 0
+        self._recovery_until = 0.0
         self.name = name
         self.node_id = node_id or service_url
         self.worker_id = worker_id or f"{self.node_id}:{id(self)}"
@@ -258,7 +287,6 @@ class Controller:
     async def flush_pending_users(self):
         """Clear all pending users without syncing them."""
         await self._user_sync_store.clear(self.node_id)
-        self._work_available.clear()
 
     async def node_version(self) -> str:
         async with self._version_lock:
@@ -397,6 +425,9 @@ class Controller:
                 task = asyncio.create_task(t())
                 self._tasks.append(task)
 
+        self._recovery_until = asyncio.get_running_loop().time() + self._sync_lease_seconds
+        await self.wake_sync_worker()
+
     async def disconnect(self):
         # Set shutdown event (no lock needed)
         self._shutdown_event.set()
@@ -405,7 +436,7 @@ class Controller:
         async with self._task_lock:
             await self._cleanup_tasks()
 
-        # Cleanup sync worker and pending users
+        # Stop this worker; shared queued work survives disconnect
         await self._cleanup_sync_worker()
 
         # Clear versions and set health atomically to prevent race condition
@@ -431,8 +462,7 @@ class Controller:
                     if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
                         error_type = type(result).__name__
                         self.logger.error(
-                            f"[{self.name}] Task {i} raised exception during cleanup | "
-                            f"Error: {error_type} - {result!s}"
+                            f"[{self.name}] Task {i} raised exception during cleanup | Error: {error_type} - {result!s}"
                         )
             except TimeoutError:
                 self.logger.warning(f"[{self.name}] Timeout waiting for {len(self._tasks)} tasks to cleanup")
@@ -440,164 +470,276 @@ class Controller:
             self._tasks.clear()
 
     async def _cleanup_sync_worker(self):
-        """Clean up sync worker and pending users."""
-        # Cancel sync worker if running
+        """Stop this worker without deleting shared pending or leased work."""
         async with self._sync_worker_lock:
-            if self._sync_worker_task and not self._sync_worker_task.done():
-                self._sync_worker_task.cancel()
-                try:
-                    await asyncio.wait_for(self._sync_worker_task, timeout=2.0)
-                except (TimeoutError, asyncio.CancelledError):
-                    pass
-                self._sync_worker_task = None
-
-        # Clear pending users
-        await self._user_sync_store.clear(self.node_id)
-        self._work_available.clear()
+            task = self._sync_worker_task
+            if task is not None and not task.done():
+                task.cancel()
+                with suppress(TimeoutError, asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=2.0)
+            self._sync_worker_task = None
 
     def is_shutting_down(self) -> bool:
-        """Check if the node is shutting down"""
         return self._shutdown_event.is_set()
 
+    async def wake_sync_worker(self) -> None:
+        """Notify this controller of work, including work enqueued by another process."""
+        self._work_available.set()
+        await self._ensure_sync_worker_running()
+
     async def _ensure_sync_worker_running(self):
-        """Spawn sync worker if not already running."""
         async with self._sync_worker_lock:
-            if self._sync_worker_task is None or self._sync_worker_task.done():
+            if not self.is_shutting_down() and (self._sync_worker_task is None or self._sync_worker_task.done()):
                 self._sync_worker_task = asyncio.create_task(self._sync_worker())
 
-    async def _claim_pending_users(self, limit: int = 2000) -> list[ClaimedUser]:
-        """Claim pending users from the configured sync store."""
-        claimed = await self._user_sync_store.claim_users(
-            self.node_id, self.worker_id, limit=limit, lease_seconds=self._sync_lease_seconds
-        )
-        if not claimed:
-            self._work_available.clear()
-        return claimed
+    async def _fence_state(self) -> tuple[bool, int]:
+        state = getattr(self._user_sync_store, "fence_state", None)
+        return await state(self.node_id) if callable(state) else (False, 0)
+
+    async def _claim_pending_users(self, limit: int | None = None) -> list[ClaimedUser]:
+        active, generation = await self._fence_state()
+        if active:
+            self._work_available.set()
+            return []
+        self._claim_generation = generation
+        # Consume before reading: an enqueue concurrent with an empty result must
+        # retain its wake. Keep draining after any bounded non-empty claim.
+        self._work_available.clear()
+        try:
+            claimed = await self._user_sync_store.claim_users(
+                self.node_id,
+                self.worker_id,
+                limit=min(limit or self._sync_batch_size, self._sync_batch_size),
+                lease_seconds=self._sync_lease_seconds,
+            )
+            if claimed:
+                self._work_available.set()
+            else:
+                has_pending = getattr(self._user_sync_store, "has_pending", None)
+                if callable(has_pending):
+                    if await has_pending(self.node_id):
+                        self._work_available.set()
+                elif asyncio.get_running_loop().time() < self._recovery_until:
+                    # Legacy stores cannot report outstanding leases. Poll through
+                    # the recovery window after reconnect or an uncertain claim.
+                    self._work_available.set()
+            return claimed
+        except BaseException:
+            self._work_available.set()
+            raise
 
     async def _ack_claimed_users(self, claimed_users: list[ClaimedUser]):
-        await self._user_sync_store.ack_users(self.node_id, [item.token for item in claimed_users])
-
-    async def _requeue_claimed_users(self, claimed_users: list[ClaimedUser]):
-        await self._user_sync_store.requeue_users(self.node_id, claimed_users)
-        if claimed_users:
+        if not claimed_users:
+            return
+        active, generation = await self._fence_state()
+        if active or generation != self._claim_generation:
+            refresh = getattr(self._user_sync_store, "refresh_claimed", None)
+            if callable(refresh):
+                await refresh(self.node_id, claimed_users)
+            else:
+                await self._requeue_claimed_users(claimed_users)
+            self._work_available.set()
+            return
+        unconfirmed = await self._user_sync_store.ack_users(self.node_id, [item.token for item in claimed_users])
+        if unconfirmed:
+            refresh = getattr(self._user_sync_store, "request_refresh", None)
+            if not callable(refresh):
+                raise RuntimeError("A store returning unconfirmed emails must implement request_refresh")
+            await refresh(self.node_id, list(unconfirmed))
             self._work_available.set()
 
-    async def _sync_worker(self):
-        """Lazy worker that processes pending users and exits when idle."""
-        self.logger.debug(f"[{self.name}] Sync worker started")
-        retry_delay = 1.0
-        max_retry_delay = 30.0
-        supports_chunked, node_version = await self._supports_chunked_sync()
-        if not supports_chunked:
-            self.logger.debug(
-                f"[{self.name}] Chunked sync disabled for node version '{node_version or 'unknown'}' (< v0.2.0)"
-            )
+    async def _requeue_claimed_users(self, claimed_users: list[ClaimedUser]):
+        if claimed_users:
+            self._work_available.set()
+            await self._user_sync_store.requeue_users(self.node_id, claimed_users)
 
+    async def _deliver_claimed_users(self, claimed_users: list[ClaimedUser]) -> list[User]:
+        users = [item.user for item in claimed_users]
+        if self._user_sync_resolver is not None:
+            current = {
+                user.email: user
+                for user in await self._user_sync_resolver(self.node_id, [user.email for user in users])
+            }
+            # Missing records cannot safely fall back to a stale queued payload.
+            # Applications must return an explicit removal payload for deleted users.
+            users = [current[user.email] for user in users]
+        supports_chunked, _ = await self._supports_chunked_sync()
+        if supports_chunked:
+            return await self.sync_users_chunked(
+                users, chunk_size=self._sync_chunk_size, flush_pending=False, timeout=self._internal_timeout
+            )
+        return await self._sync_batch_users(users)
+
+    async def _sync_worker(self):
+        """Drain bounded batches, retaining wakes and retrying failures with backoff."""
+        retry_delay = 1.0
+        claimed: list[ClaimedUser] = []
+        loop = asyncio.get_running_loop()
         try:
             while not self.is_shutting_down():
-                # Wait for work or timeout
                 try:
                     await asyncio.wait_for(self._work_available.wait(), timeout=self._worker_idle_timeout)
                 except TimeoutError:
-                    # No work for idle_timeout seconds, exit worker
-                    self.logger.debug(f"[{self.name}] Sync worker idle, exiting")
-                    break
-
-                # Check health - don't sync if not connected or invalid
-                health = await self.get_health()
-                if health == Health.NOT_CONNECTED:
-                    self.logger.debug(f"[{self.name}] Sync worker exiting - not connected")
-                    break
-                if health == Health.INVALID:
-                    self.logger.debug(f"[{self.name}] Sync worker exiting - node invalid")
-                    break
-
-                # If BROKEN, wait and loop back without draining users
-                if health == Health.BROKEN:
-                    self.logger.warning(f"[{self.name}] Node is broken, waiting {retry_delay}s before retry")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, max_retry_delay)
-                    continue
-
-                # Claim pending users atomically (only when healthy)
-                claimed_users = await self._claim_pending_users()
-                if not claimed_users:
-                    await asyncio.sleep(self._sync_poll_interval)
-                    continue
-                users = [item.user for item in claimed_users]
-
-                # Prefer chunked sync for large batches to reduce per-request overhead
-                use_chunked = supports_chunked and len(users) >= 1000
-                if use_chunked:
-                    # Aim for ~10 chunks, cap size to 2000 to stay under server limits
-                    chunk_size = min(2000, max(1, math.ceil(len(users) / 10)))
-                    failed_users = await self.sync_users_chunked(
-                        users=users, chunk_size=chunk_size, flush_pending=False, timeout=self._internal_timeout
-                    )
-                    if failed_users:
-                        self.logger.warning(
-                            f"[{self.name}] {len(failed_users)}/{len(users)} users failed to chunk-sync "
-                            f"(chunk_size={chunk_size})"
-                        )
-                        failed_emails = {user.email for user in failed_users}
+                    # No await between this check and task exit: an enqueue either
+                    # keeps this worker alive or sees a completed task and starts one.
+                    if self._work_available.is_set():
+                        continue
+                    return
+                try:
+                    health = await self.get_health()
+                    if health in (Health.NOT_CONNECTED, Health.INVALID):
+                        return
+                    if health == Health.BROKEN:
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, 30.0)
+                        continue
+                    # Store latency, resolver, transport lock and all stream chunks
+                    # share one deadline ending before another worker can own the lease.
+                    budget = self._sync_lease_seconds - min(1.0, self._sync_lease_seconds / 4)
+                    async with asyncio.timeout(budget):
+                        claimed = await self._claim_pending_users()
+                        if claimed:
+                            active, generation = await self._fence_state()
+                            if active or generation != self._claim_generation:
+                                # A snapshot began during the claim. Nothing has
+                                # been sent, so defer without counting a failure.
+                                await self._requeue_claimed_users(claimed)
+                                claimed = []
+                        failed = await self._deliver_claimed_users(claimed) if claimed else []
+                    if not claimed:
+                        await asyncio.sleep(self._sync_poll_interval)
+                        continue
+                    failed_emails = {user.email for user in failed}
+                    async with asyncio.timeout(self._internal_timeout):
                         await self._ack_claimed_users(
-                            [item for item in claimed_users if item.user.email not in failed_emails]
+                            [item for item in claimed if item.user.email not in failed_emails]
                         )
                         await self._requeue_claimed_users(
-                            [item for item in claimed_users if item.user.email in failed_emails]
+                            [item for item in claimed if item.user.email in failed_emails]
                         )
+                    claimed = []
+                    if failed:
                         await self._increment_user_sync_failure()
                         await asyncio.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                        retry_delay = min(retry_delay * 2, 30.0)
                     else:
-                        self.logger.debug(
-                            f"[{self.name}] Chunk-synced {len(users)} user(s) with chunk_size={chunk_size}"
-                        )
-                        await self._ack_claimed_users(claimed_users)
                         await self._reset_user_sync_failure_count()
                         retry_delay = 1.0
-                else:
-                    # Batch sync users individually
-                    try:
-                        failed_users = await self._sync_batch_users(users)
-                        if failed_users:
-                            self.logger.warning(f"[{self.name}] {len(failed_users)}/{len(users)} users failed to sync")
-                            failed_emails = {user.email for user in failed_users}
-                            await self._ack_claimed_users(
-                                [item for item in claimed_users if item.user.email not in failed_emails]
-                            )
-                            await self._requeue_claimed_users(
-                                [item for item in claimed_users if item.user.email in failed_emails]
-                            )
-                            await self._increment_user_sync_failure()
-                            # Exponential backoff on partial failure
-                            await asyncio.sleep(retry_delay)
-                            retry_delay = min(retry_delay * 2, max_retry_delay)
-                        else:
-                            self.logger.debug(f"[{self.name}] Synced {len(users)} user(s)")
-                            await self._ack_claimed_users(claimed_users)
-                            await self._reset_user_sync_failure_count()
-                            retry_delay = 1.0  # Reset retry delay on success
-
-                    except Exception as e:
-                        error_type = type(e).__name__
-                        self.logger.warning(
-                            f"[{self.name}] Batch sync failed for {len(users)} user(s), requeuing | "
-                            f"Error: {error_type} - {e!s}"
-                        )
-                        await self._increment_user_sync_failure()
-                        await self._requeue_claimed_users(claimed_users)
-                        # Exponential backoff on failure
-                        await asyncio.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, max_retry_delay)
-
-        except asyncio.CancelledError:
-            self.logger.debug(f"[{self.name}] Sync worker cancelled")
-        except Exception as e:
-            error_type = type(e).__name__
-            self.logger.exception(f"[{self.name}] Unexpected error in sync worker | Error: {error_type}")
+                except Exception as exc:
+                    self.logger.warning(f"[{self.name}] User sync failed; retrying: {type(exc).__name__}: {exc!s}")
+                    self._work_available.set()
+                    self._recovery_until = loop.time() + self._sync_lease_seconds
+                    with suppress(Exception):
+                        async with asyncio.timeout(self._internal_timeout):
+                            await self._requeue_claimed_users(claimed)
+                    claimed = []
+                    await self._increment_user_sync_failure()
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
         finally:
-            self.logger.debug(f"[{self.name}] Sync worker finished")
+            if claimed:
+                # Cancellation releases owned claims; if storage is unavailable,
+                # their leases retain the work for the next worker to recover.
+                with suppress(Exception):
+                    async with asyncio.timeout(self._internal_timeout):
+                        await self._requeue_claimed_users(claimed)
+            if self._sync_worker_task is asyncio.current_task():
+                self._sync_worker_task = None
+
+    async def full_sync_in_progress(self) -> bool:
+        return (await self._fence_state())[0]
+
+    async def _renew_full_sync(self, token: str, lease_seconds: float, held: FullSyncHold) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(lease_seconds / 3)
+            started = loop.time()
+            try:
+                async with asyncio.timeout_at(held.until):
+                    renewed = await self._user_sync_store.renew_full_sync(self.node_id, token, lease_seconds)
+                if renewed:
+                    held.until = started + lease_seconds
+                    continue
+            except Exception as exc:
+                # Fail closed when the store cannot confirm ownership. The owner
+                # must stop before a competing snapshot can acquire this fence.
+                self.logger.warning(f"[{self.name}] Full-sync lease renewal failed: {type(exc).__name__}")
+            held.lost = True
+            held.owner.cancel()
+            return
+
+    @asynccontextmanager
+    async def full_sync_fence(self, lease_seconds: float = 120.0) -> AsyncIterator[FullSyncHold]:
+        """Pause shared delta delivery while a fresh snapshot is read and applied.
+
+        Requires SnapshotUserSyncStoreProtocol; no unsafe process-local fallback
+        is used for an external store missing shared coordination.
+        """
+        if not math.isfinite(lease_seconds) or lease_seconds <= 0:
+            raise ValueError("lease_seconds must be finite and positive")
+        store = self._user_sync_store
+        methods = (
+            "begin_full_sync",
+            "renew_full_sync",
+            "end_full_sync",
+            "fence_state",
+            "capture_queued",
+            "retire_captured",
+        )
+        if not all(callable(getattr(store, method, None)) for method in methods):
+            raise NodeAPIError(-2, "Full snapshot coordination requires SnapshotUserSyncStoreProtocol")
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        async with asyncio.timeout(lease_seconds):
+            token = await store.begin_full_sync(self.node_id, self.worker_id, lease_seconds)
+        if token is None:
+            raise NodeAPIError(409, "A full user sync is already in progress for this node")
+        held = FullSyncHold(asyncio.current_task(), started + lease_seconds)
+        renewal = asyncio.create_task(self._renew_full_sync(token, lease_seconds, held))
+        try:
+            held.check()
+            yield held
+            held.check()
+        except asyncio.CancelledError:
+            if not held.lost:
+                raise
+            asyncio.current_task().uncancel()
+            raise NodeAPIError(409, "Full user sync aborted after losing its lease") from None
+        finally:
+            renewal.cancel()
+            with suppress(asyncio.CancelledError):
+                await renewal
+            with suppress(Exception):
+                async with asyncio.timeout(self._internal_timeout):
+                    await store.end_full_sync(self.node_id, token)
+            await self.wake_sync_worker()
+
+    async def capture_queued_work(self) -> dict[str, int]:
+        """Under a full-sync fence, wait for deliveries and capture pending revisions."""
+        if not await self.full_sync_in_progress():
+            raise NodeAPIError(409, "Capture queued work inside full_sync_fence()")
+        async with asyncio.timeout(self._sync_lease_seconds + 5):
+            while True:
+                captured, active = await self._user_sync_store.capture_queued(self.node_id)
+                if not active:
+                    return captured
+                await asyncio.sleep(min(self._sync_poll_interval, 0.2))
+
+    async def retire_queued_work(self, captured: dict[str, int]) -> None:
+        """Retire only captured revisions after a successful authoritative snapshot."""
+        await self._user_sync_store.retire_captured(self.node_id, captured)
+
+    async def sync_users_from_source(
+        self, load_users: Callable[[], Awaitable[list[User]]], timeout: int | None = None
+    ) -> None:
+        """Read a fresh full snapshot after quiescing deltas, then retire covered work."""
+        async with self.full_sync_fence() as held:
+            captured = await self.capture_queued_work()
+            users = await load_users()
+            held.check()
+            await self.sync_users(users, flush_pending=False, timeout=timeout)
+            held.check()
+            await self.retire_queued_work(captured)
 
     async def _make_json_request(
         self,

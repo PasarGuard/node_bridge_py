@@ -37,6 +37,7 @@ from PasarGuardNodeBridge.storage import (
     NodeLifecycleCoordinatorProtocol,
     NodeLifecycleState,
     NodeRegistryProtocol,
+    SnapshotUserSyncStoreProtocol,
     UserSyncStoreProtocol,
 )
 from PasarGuardNodeBridge.utils import create_proxy, create_user
@@ -170,6 +171,7 @@ __all__ = [
     "NodeRegistryProtocol",
     "NodeType",
     "PasarGuardNode",
+    "SnapshotUserSyncStoreProtocol",
     "UserSyncStoreProtocol",
     "create_node",
     "create_node_from_config",
