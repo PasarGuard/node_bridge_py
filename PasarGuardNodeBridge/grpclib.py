@@ -211,9 +211,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(
                             f"[{self.name}] Best-effort Stop request failed | Error: {type(e).__name__} - {e!s}"
                         )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
-                    )
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
                 await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
                 raise
@@ -252,6 +250,24 @@ class Node(PasarGuardNode):
             method=self._client.GetStats,
             request=service.StatRequest(reset=reset, name=name, type=stat_type),
             timeout=timeout,
+        )
+
+    async def collect_usage(self, stat_type: service.StatType, timeout: int | None = None) -> service.UsageReceipt:
+        """Collect or replay a node-owned durable usage receipt."""
+        return await self._handle_grpc_request(
+            method=self._client.CollectUsage,
+            request=service.UsageRequest(type=stat_type),
+            timeout=timeout or self._default_timeout,
+        )
+
+    async def acknowledge_usage(
+        self, stat_type: service.StatType, receipt_id: str, timeout: int | None = None
+    ) -> service.Empty:
+        """ACK only after durable storage; a stale ACK cannot clear a newer receipt."""
+        return await self._handle_grpc_request(
+            method=self._client.AcknowledgeUsage,
+            request=service.UsageAck(type=stat_type, receipt_id=receipt_id),
+            timeout=timeout or self._default_timeout,
         )
 
     async def get_outbounds_latency(self, name: str = "", timeout: int | None = None) -> service.LatencyResponse | None:

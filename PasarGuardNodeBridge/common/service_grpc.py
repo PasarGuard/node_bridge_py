@@ -43,6 +43,14 @@ class NodeServiceBase(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def CollectUsage(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.UsageRequest, PasarGuardNodeBridge.common.service_pb2.UsageReceipt]') -> None:
+        pass
+
+    @abc.abstractmethod
+    async def AcknowledgeUsage(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.UsageAck, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
+        pass
+
+    @abc.abstractmethod
     async def GetOutboundsLatency(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.LatencyRequest, PasarGuardNodeBridge.common.service_pb2.LatencyResponse]') -> None:
         pass
 
@@ -133,6 +141,18 @@ class NodeServiceBase(abc.ABC):
                 grpclib.const.Cardinality.UNARY_UNARY,
                 PasarGuardNodeBridge.common.service_pb2.StatRequest,
                 PasarGuardNodeBridge.common.service_pb2.StatResponse,
+            ),
+            '/service.NodeService/CollectUsage': grpclib.const.Handler(
+                self.CollectUsage,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.UsageRequest,
+                PasarGuardNodeBridge.common.service_pb2.UsageReceipt,
+            ),
+            '/service.NodeService/AcknowledgeUsage': grpclib.const.Handler(
+                self.AcknowledgeUsage,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.UsageAck,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
             ),
             '/service.NodeService/GetOutboundsLatency': grpclib.const.Handler(
                 self.GetOutboundsLatency,
@@ -253,6 +273,18 @@ class NodeServiceStub:
             '/service.NodeService/GetStats',
             PasarGuardNodeBridge.common.service_pb2.StatRequest,
             PasarGuardNodeBridge.common.service_pb2.StatResponse,
+        )
+        self.CollectUsage = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/CollectUsage',
+            PasarGuardNodeBridge.common.service_pb2.UsageRequest,
+            PasarGuardNodeBridge.common.service_pb2.UsageReceipt,
+        )
+        self.AcknowledgeUsage = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/AcknowledgeUsage',
+            PasarGuardNodeBridge.common.service_pb2.UsageAck,
+            PasarGuardNodeBridge.common.service_pb2.Empty,
         )
         self.GetOutboundsLatency = grpclib.client.UnaryUnaryMethod(
             channel,
