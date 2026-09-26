@@ -91,6 +91,30 @@ class StatRequest(_message.Message):
     type: StatType
     def __init__(self, name: _Optional[str] = ..., reset: bool = ..., type: _Optional[_Union[StatType, str]] = ...) -> None: ...
 
+class UsageRequest(_message.Message):
+    __slots__ = ("type",)
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    type: StatType
+    def __init__(self, type: _Optional[_Union[StatType, str]] = ...) -> None: ...
+
+class UsageReceipt(_message.Message):
+    __slots__ = ("receipt_id", "collected_at", "stats")
+    RECEIPT_ID_FIELD_NUMBER: _ClassVar[int]
+    COLLECTED_AT_FIELD_NUMBER: _ClassVar[int]
+    STATS_FIELD_NUMBER: _ClassVar[int]
+    receipt_id: str
+    collected_at: int
+    stats: _containers.RepeatedCompositeFieldContainer[Stat]
+    def __init__(self, receipt_id: _Optional[str] = ..., collected_at: _Optional[int] = ..., stats: _Optional[_Iterable[_Union[Stat, _Mapping]]] = ...) -> None: ...
+
+class UsageAck(_message.Message):
+    __slots__ = ("type", "receipt_id")
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    RECEIPT_ID_FIELD_NUMBER: _ClassVar[int]
+    type: StatType
+    receipt_id: str
+    def __init__(self, type: _Optional[_Union[StatType, str]] = ..., receipt_id: _Optional[str] = ...) -> None: ...
+
 class OnlineStatResponse(_message.Message):
     __slots__ = ("name", "value")
     NAME_FIELD_NUMBER: _ClassVar[int]

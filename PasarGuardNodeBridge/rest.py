@@ -232,9 +232,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(
                             f"[{self.name}] Best-effort stop request failed | Error: {type(e).__name__} - {e!s}"
                         )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
-                    )
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
                 await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
                 raise
@@ -270,6 +268,28 @@ class Node(PasarGuardNode):
             timeout=timeout,
             proto_message=service.StatRequest(reset=reset, name=name, type=stat_type),
             proto_response_class=service.StatResponse,
+        )
+
+    async def collect_usage(self, stat_type: service.StatType, timeout: int | None = None) -> service.UsageReceipt:
+        """Collect or replay a node-owned durable usage receipt."""
+        return await self._make_request(
+            method="POST",
+            endpoint="usage/collect",
+            timeout=timeout or self._default_timeout,
+            proto_message=service.UsageRequest(type=stat_type),
+            proto_response_class=service.UsageReceipt,
+        )
+
+    async def acknowledge_usage(
+        self, stat_type: service.StatType, receipt_id: str, timeout: int | None = None
+    ) -> service.Empty:
+        """ACK only after durable storage; a stale ACK cannot clear a newer receipt."""
+        return await self._make_request(
+            method="POST",
+            endpoint="usage/ack",
+            timeout=timeout or self._default_timeout,
+            proto_message=service.UsageAck(type=stat_type, receipt_id=receipt_id),
+            proto_response_class=service.Empty,
         )
 
     async def get_outbounds_latency(self, name: str = "", timeout: int | None = None) -> service.LatencyResponse | None:

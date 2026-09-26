@@ -41,6 +41,16 @@ class PasarGuardNode(Controller, ABC):
     ) -> service.StatResponse | None:
         raise NotImplementedError
 
+    async def collect_usage(self, stat_type: service.StatType, timeout: int | None = None) -> service.UsageReceipt:
+        """Read a durable receipt without resetting counters; safe to repeat."""
+        raise NotImplementedError
+
+    async def acknowledge_usage(
+        self, stat_type: service.StatType, receipt_id: str, timeout: int | None = None
+    ) -> service.Empty:
+        """Release a receipt only after the caller durably stores it; safe to repeat."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_outbounds_latency(self, name: str = "", timeout: int | None = None) -> service.LatencyResponse | None:
         raise NotImplementedError
