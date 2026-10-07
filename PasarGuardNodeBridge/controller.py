@@ -353,7 +353,18 @@ class Controller:
         try:
             while True:
                 await asyncio.sleep(interval)
-                await self._lifecycle_coordinator.heartbeat(lease)
+                try:
+                    renewed = await self._lifecycle_coordinator.heartbeat(lease)
+                except Exception as e:
+                    # Keep renewing: a transient store error must not let the lease lapse while a long
+                    # operation (e.g. a node update that runs for minutes) is still in progress.
+                    self.logger.warning(
+                        f"[{self.name}] Lifecycle lease heartbeat failed | Error: {type(e).__name__} - {e!s}"
+                    )
+                    continue
+                if renewed is False:  # coordinators that report it: the lease is gone, stop renewing
+                    self.logger.warning(f"[{self.name}] Lifecycle lease for {lease.operation} was lost")
+                    return
         except asyncio.CancelledError:
             pass
 
