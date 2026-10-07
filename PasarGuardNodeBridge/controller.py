@@ -35,6 +35,15 @@ from PasarGuardNodeBridge.storage import (
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
 DEFAULT_INTERNAL_TIMEOUT = 15  # Default timeout for internal gRPC/HTTP operations
+# Maintenance calls block until node-serviced finishes the pg-node command (docker pulls, downloads).
+# node-serviced allows 5 minutes for update/core_update/geofiles and 60 s for hard_reset, so wait a
+# bit longer than that: the caller gets the real result and the lifecycle lease is held meanwhile.
+MAINTENANCE_TIMEOUTS = {
+    LifecycleOperation.UPDATE_NODE: 330,
+    LifecycleOperation.UPDATE_CORE: 330,
+    LifecycleOperation.UPDATE_GEOFILES: 330,
+    LifecycleOperation.HARD_RESET: 90,
+}
 
 
 class NodeAPIError(Exception):
@@ -796,7 +805,9 @@ class Controller:
 
         lease = await self._acquire_lifecycle_lease(operation)
         try:
-            return await self._make_json_request(method="POST", endpoint=endpoint, json=json)
+            return await self._make_json_request(
+                method="POST", endpoint=endpoint, json=json, timeout=MAINTENANCE_TIMEOUTS[operation]
+            )
         finally:
             await self._release_lifecycle_lease(lease)
 
