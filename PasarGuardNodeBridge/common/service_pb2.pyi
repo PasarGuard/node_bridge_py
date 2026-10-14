@@ -228,21 +228,28 @@ class Hysteria(_message.Message):
     auth: str
     def __init__(self, auth: _Optional[str] = ...) -> None: ...
 
+class Masque(_message.Message):
+    __slots__ = ()
+    PASS_FIELD_NUMBER: _ClassVar[int]
+    def __init__(self, **kwargs) -> None: ...
+
 class Proxy(_message.Message):
-    __slots__ = ("vmess", "vless", "trojan", "shadowsocks", "wireguard", "hysteria")
+    __slots__ = ("vmess", "vless", "trojan", "shadowsocks", "wireguard", "hysteria", "masque")
     VMESS_FIELD_NUMBER: _ClassVar[int]
     VLESS_FIELD_NUMBER: _ClassVar[int]
     TROJAN_FIELD_NUMBER: _ClassVar[int]
     SHADOWSOCKS_FIELD_NUMBER: _ClassVar[int]
     WIREGUARD_FIELD_NUMBER: _ClassVar[int]
     HYSTERIA_FIELD_NUMBER: _ClassVar[int]
+    MASQUE_FIELD_NUMBER: _ClassVar[int]
     vmess: Vmess
     vless: Vless
     trojan: Trojan
     shadowsocks: Shadowsocks
     wireguard: Wireguard
     hysteria: Hysteria
-    def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ..., wireguard: _Optional[_Union[Wireguard, _Mapping]] = ..., hysteria: _Optional[_Union[Hysteria, _Mapping]] = ...) -> None: ...
+    masque: Masque
+    def __init__(self, vmess: _Optional[_Union[Vmess, _Mapping]] = ..., vless: _Optional[_Union[Vless, _Mapping]] = ..., trojan: _Optional[_Union[Trojan, _Mapping]] = ..., shadowsocks: _Optional[_Union[Shadowsocks, _Mapping]] = ..., wireguard: _Optional[_Union[Wireguard, _Mapping]] = ..., hysteria: _Optional[_Union[Hysteria, _Mapping]] = ..., masque: _Optional[_Union[Masque, _Mapping]] = ...) -> None: ...
 
 class User(_message.Message):
     __slots__ = ("email", "proxies", "inbounds")
