@@ -42,7 +42,7 @@ def create_proxy(
         shadowsocks=Shadowsocks(password=shadowsocks_password, method=shadowsocks_method),
         wireguard=Wireguard(public_key=wireguard_public_key, peer_ips=wireguard_peer_ips),
         hysteria=Hysteria(auth=hysteria_auth),
-        masque=Masque(pass_=masque_pass)
+        masque=Masque(**{"pass": masque_pass})
     )
 
 
