@@ -56,6 +56,10 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_users_online_ip_list(self, timeout: int | None = None) -> service.StatsAllOnlineIpListResponse | None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def sync_users(
         self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
