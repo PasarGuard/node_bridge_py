@@ -114,6 +114,19 @@ class StatsOnlineIpListResponse(_message.Message):
     ips: _containers.ScalarMap[str, int]
     def __init__(self, name: _Optional[str] = ..., ips: _Optional[_Mapping[str, int]] = ...) -> None: ...
 
+class StatsAllOnlineIpListResponse(_message.Message):
+    __slots__ = ("users",)
+    class UsersEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: StatsOnlineIpListResponse
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[StatsOnlineIpListResponse, _Mapping]] = ...) -> None: ...
+    USERS_FIELD_NUMBER: _ClassVar[int]
+    users: _containers.MessageMap[str, StatsOnlineIpListResponse]
+    def __init__(self, users: _Optional[_Mapping[str, StatsOnlineIpListResponse]] = ...) -> None: ...
+
 class Latency(_message.Message):
     __slots__ = ("name", "alive", "delay", "link", "last_seen_time", "last_try_time", "source")
     NAME_FIELD_NUMBER: _ClassVar[int]

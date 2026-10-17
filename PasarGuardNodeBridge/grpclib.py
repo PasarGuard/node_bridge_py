@@ -280,6 +280,14 @@ class Node(PasarGuardNode):
             timeout=timeout,
         )
 
+    async def get_users_online_ip_list(self, timeout: int | None = None) -> service.StatsAllOnlineIpListResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._handle_grpc_request(
+            method=self._client.GetUsersOnlineIpListStats,
+            request=service.Empty(),
+            timeout=timeout,
+        )
+
     async def sync_users(
         self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
     ) -> service.Empty | None:
