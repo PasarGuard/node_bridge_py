@@ -253,6 +253,8 @@ full sync. `flush_pending_users()` remains an explicit queue discard operation.
 
 Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, and `update_geofiles()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
 
+While an operation runs, the controller renews its lease by calling the coordinator's `heartbeat(lease)` every third of `lifecycle_lease_seconds`. Return `True` when the lease was renewed and `False` when this lease is no longer held (released, or expired and taken by another worker); the controller then stops renewing. An exception from `heartbeat` is logged and the next renewal is tried as usual.
+
 ```python
 lifecycle = MyRedisLifecycleCoordinator(redis_client)
 
