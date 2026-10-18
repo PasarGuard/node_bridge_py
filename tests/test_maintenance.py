@@ -30,6 +30,18 @@ class FlakyHeartbeatCoordinator(InMemoryNodeLifecycleCoordinator):
         return await super().heartbeat(lease)
 
 
+class LostLeaseCoordinator(InMemoryNodeLifecycleCoordinator):
+    """Reports the lease as gone on every heartbeat."""
+
+    def __init__(self):
+        super().__init__()
+        self.heartbeats = 0
+
+    async def heartbeat(self, lease):
+        self.heartbeats += 1
+        return False
+
+
 class MaintenanceTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         async def root(request):
@@ -101,10 +113,25 @@ class MaintenanceTimeoutTests(unittest.IsolatedAsyncioTestCase):
         coordinator = FlakyHeartbeatCoordinator()
         node = self.make_node(lifecycle_coordinator=coordinator, lifecycle_lease_seconds=0.3)
 
-        response = await node.update_node()
+        update = asyncio.create_task(node.update_node())
+        await asyncio.sleep(0.8)  # well past the first lease's expiry, mid-call
+        other = await coordinator.try_acquire(node.node_id, "other-worker", LifecycleOperation.START, 1)
+        response = await update
 
+        self.assertIsNone(other)
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(coordinator.heartbeats, 3)
+
+    async def test_lost_lease_stops_renewal_but_not_the_call(self):
+        coordinator = LostLeaseCoordinator()
+        node = self.make_node(lifecycle_coordinator=coordinator, lifecycle_lease_seconds=0.3)
+
+        with self.assertLogs("maintenance-test", logging.WARNING) as logs:
+            response = await node.update_node()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(coordinator.heartbeats, 1)
+        self.assertTrue(any("was lost" in line for line in logs.output))
 
 
 if __name__ == "__main__":
