@@ -146,6 +146,20 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(lease)
         self.assertEqual(lease.worker_id, "worker-2")
 
+    async def test_heartbeat_reports_whether_the_lease_was_renewed(self):
+        coordinator = InMemoryNodeLifecycleCoordinator()
+        first = await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.UPDATE_NODE, 0.001)
+        self.assertIs(await coordinator.heartbeat(first), True)
+
+        await asyncio.sleep(0.01)
+        second = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.START, 30)
+        self.assertIsNotNone(second)
+        self.assertIs(await coordinator.heartbeat(first), False)
+        self.assertIs(await coordinator.heartbeat(second), True)
+
+        await coordinator.release(second)
+        self.assertIs(await coordinator.heartbeat(second), False)
+
     async def test_node_update_is_exclusive_across_controllers(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
         request_started = asyncio.Event()

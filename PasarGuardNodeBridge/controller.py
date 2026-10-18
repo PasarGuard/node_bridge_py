@@ -35,6 +35,15 @@ from PasarGuardNodeBridge.storage import (
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
 DEFAULT_INTERNAL_TIMEOUT = 15  # Default timeout for internal gRPC/HTTP operations
+# Maintenance calls block until node-serviced finishes the pg-node command (docker pulls, downloads).
+# node-serviced allows 5 minutes for update/core_update/geofiles and 60 s for hard_reset, so wait a
+# bit longer than that: the caller gets the real result and the lifecycle lease is held meanwhile.
+MAINTENANCE_TIMEOUTS = {
+    LifecycleOperation.UPDATE_NODE: 330,
+    LifecycleOperation.UPDATE_CORE: 330,
+    LifecycleOperation.UPDATE_GEOFILES: 330,
+    LifecycleOperation.HARD_RESET: 90,
+}
 
 
 class NodeAPIError(Exception):
@@ -344,7 +353,18 @@ class Controller:
         try:
             while True:
                 await asyncio.sleep(interval)
-                await self._lifecycle_coordinator.heartbeat(lease)
+                try:
+                    renewed = await self._lifecycle_coordinator.heartbeat(lease)
+                except Exception as e:
+                    # Keep renewing: a transient store error must not let the lease lapse while a long
+                    # operation (e.g. a node update that runs for minutes) is still in progress.
+                    self.logger.warning(
+                        f"[{self.name}] Lifecycle lease heartbeat failed | Error: {type(e).__name__} - {e!s}"
+                    )
+                    continue
+                if renewed is False:  # coordinators that report it: the lease is gone, stop renewing
+                    self.logger.warning(f"[{self.name}] Lifecycle lease for {lease.operation} was lost")
+                    return
         except asyncio.CancelledError:
             pass
 
@@ -796,7 +816,9 @@ class Controller:
 
         lease = await self._acquire_lifecycle_lease(operation)
         try:
-            return await self._make_json_request(method="POST", endpoint=endpoint, json=json)
+            return await self._make_json_request(
+                method="POST", endpoint=endpoint, json=json, timeout=MAINTENANCE_TIMEOUTS[operation]
+            )
         finally:
             await self._release_lifecycle_lease(lease)
 
