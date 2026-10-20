@@ -6,6 +6,7 @@ from grpclib.const import Status
 from PasarGuardNodeBridge.common.service_pb2 import (
     Hysteria,
     Masque,
+    Mtproto,
     Proxy,
     Shadowsocks,
     Trojan,
@@ -31,9 +32,24 @@ def create_proxy(
     wireguard_peer_ips: list[str] | None = None,
     hysteria_auth: str | None = None,
     masque_pass: str | None = None,
+    mtproto_secret: str | None = None,
+    mtproto_user_ad_tag: str | None = None,
+    mtproto_max_tcp_conns: int = 0,
+    mtproto_max_unique_ips: int = 0,
 ) -> Proxy:
     if wireguard_peer_ips is None:
         wireguard_peer_ips = []
+
+    # Only users with a secret get proxies.mtproto: the node skips an MTProto user without a valid one,
+    # and every other user keeps the exact wire bytes it had before this field existed.
+    mtproto = None
+    if mtproto_secret:
+        mtproto = Mtproto(
+            secret=mtproto_secret,
+            user_ad_tag=mtproto_user_ad_tag,
+            max_tcp_conns=mtproto_max_tcp_conns,
+            max_unique_ips=mtproto_max_unique_ips,
+        )
 
     return Proxy(
         vmess=Vmess(id=vmess_id),
@@ -42,7 +58,8 @@ def create_proxy(
         shadowsocks=Shadowsocks(password=shadowsocks_password, method=shadowsocks_method),
         wireguard=Wireguard(public_key=wireguard_public_key, peer_ips=wireguard_peer_ips),
         hysteria=Hysteria(auth=hysteria_auth),
-        masque=Masque(**{"pass": masque_pass})
+        masque=Masque(**{"pass": masque_pass}),
+        mtproto=mtproto,
     )
 
 
