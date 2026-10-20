@@ -34,21 +34,21 @@ def create_proxy(
     masque_pass: str | None = None,
     mtproto_secret: str | None = None,
     mtproto_user_ad_tag: str | None = None,
-    mtproto_max_tcp_conns: int = 0,
-    mtproto_max_unique_ips: int = 0,
+    mtproto_max_tcp_conns: int | None = None,
+    mtproto_max_unique_ips: int | None = None,
 ) -> Proxy:
     if wireguard_peer_ips is None:
         wireguard_peer_ips = []
 
-    # Only users with a secret get proxies.mtproto: the node skips an MTProto user without a valid one,
+    # Only users with a non-blank secret get proxies.mtproto: the node skips an MTProto user without a valid one,
     # and every other user keeps the exact wire bytes it had before this field existed.
     mtproto = None
-    if mtproto_secret:
+    if mtproto_secret and mtproto_secret.strip():
         mtproto = Mtproto(
             secret=mtproto_secret,
             user_ad_tag=mtproto_user_ad_tag,
-            max_tcp_conns=mtproto_max_tcp_conns,
-            max_unique_ips=mtproto_max_unique_ips,
+            max_tcp_conns=mtproto_max_tcp_conns or 0,
+            max_unique_ips=mtproto_max_unique_ips or 0,
         )
 
     return Proxy(
