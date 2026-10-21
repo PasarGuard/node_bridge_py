@@ -18,6 +18,8 @@ from PasarGuardNodeBridge.grpclib import Node as GrpcNode
 from PasarGuardNodeBridge.rest import Node as RestNode
 from PasarGuardNodeBridge.storage import InMemoryUserSyncStore
 
+STARTED = service.BaseInfoResponse(started=True, node_version="0.5.4", core_version="26.10.10")
+
 
 class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
     def make_node(self, node_class, port, **kwargs):
@@ -173,11 +175,25 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
                     raise error
                 await stream.send_message(service.Empty())
 
+            async def start(inner, stream):
+                await stream.recv_message()
+                await stream.send_message(STARTED)
+
+            async def snapshot(inner, stream):
+                await stream.recv_message()
+                await stream.send_message(service.Empty())
+
             def __mapping__(inner):
                 return {
                     "/service.NodeService/SyncUsersChunked": Handler(
                         inner.receive, Cardinality.STREAM_UNARY, service.UsersChunk, service.Empty
-                    )
+                    ),
+                    "/service.NodeService/Start": Handler(
+                        inner.start, Cardinality.UNARY_UNARY, service.Backend, service.BaseInfoResponse
+                    ),
+                    "/service.NodeService/SyncUsers": Handler(
+                        inner.snapshot, Cardinality.UNARY_UNARY, service.Users, service.Empty
+                    ),
                 }
 
         server = Server([Receiver()])
@@ -220,8 +236,18 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 return error
             return web.Response(body=service.Empty().SerializeToString())
 
+        async def start(request):
+            await request.read()
+            return web.Response(body=STARTED.SerializeToString())
+
+        async def snapshot(request):
+            await request.read()
+            return web.Response(body=service.Empty().SerializeToString())
+
         app = web.Application()
         app.router.add_put("/users/sync/chunked", receive)
+        app.router.add_post("/start", start)
+        app.router.add_put("/users/sync", snapshot)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -271,6 +297,18 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertCountEqual(delivered, emails)
                 self.assertEqual(list(node._sync_retries), ["bad"])
                 self.assertLess(len(batches), 30)
+
+    async def test_start_and_full_sync_forget_users_held_for_retry(self):
+        held = service.User(email="held", inbounds=["ss2022"])
+        for start in (self.start_grpc, self.start_rest):
+            node = await start(lambda emails: None)
+            with self.subTest(transport=node.__module__):
+                node._hold_rejected_user(held, "proxy is not a UserManager")
+                await node.sync_users([held])
+                self.assertEqual(node._sync_retries, {})
+                node._hold_rejected_user(held, "proxy is not a UserManager")
+                await node.start(config="{}", backend_type=0, users=[held])
+                self.assertEqual(node._sync_retries, {})
 
     async def test_only_backend_rejections_are_split(self):
         grpc_cases = [

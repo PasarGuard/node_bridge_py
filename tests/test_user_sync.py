@@ -320,7 +320,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await node.update_users([User(email="a", inbounds=["vless"]), User(email="b", inbounds=["vless"])])
         await node.connect("0.2.0", "1.0.0")
         await eventually(lambda: [user.email for user in node.delivered] == ["b", "a"])
-        self.assertEqual(node._sync_retries, {})
+        await eventually(lambda: not node._sync_retries)
         self.assertEqual(sends.count(["a"]), 3)
 
     async def test_rejected_add_is_dropped_after_the_retry_window(self):
