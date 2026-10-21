@@ -62,6 +62,20 @@ class Health(IntEnum):
     INVALID = 3
 
 
+class FailedUsers(list):
+    """Users a delta sync did not apply.
+
+    ``rejected`` is set when the node received them and its backend refused to apply them: the node
+    fails the whole batch for one user it cannot apply. Transport, timeout and "core not running"
+    failures leave it unset.
+    """
+
+    def __init__(self, users=(), rejected: bool = False, detail: str = ""):
+        super().__init__(users)
+        self.rejected = rejected
+        self.detail = detail
+
+
 class FullSyncHold:
     """Ownership check for a renewable full-sync lease."""
 
@@ -176,6 +190,10 @@ class Controller:
         self._user_sync_failure_count = 0
         self._hard_reset_threshold = 5
         self._failure_count_lock = asyncio.Lock()  # Only for incrementing counters
+
+        # Consecutive node rejections per user email; a user is dropped from the queue at the limit
+        self._sync_rejections: dict[str, int] = {}
+        self._sync_rejection_limit = 3
 
         # Separate locks for different resources to reduce contention
         self._health_lock = asyncio.Lock()
@@ -585,10 +603,63 @@ class Controller:
             users = [current[user.email] for user in users]
         supports_chunked, _ = await self._supports_chunked_sync()
         if supports_chunked:
-            return await self.sync_users_chunked(
-                users, chunk_size=self._sync_chunk_size, flush_pending=False, timeout=self._internal_timeout
-            )
+            return await self._sync_isolating_rejections(users)
         return await self._sync_batch_users(users)
+
+    async def _sync_isolating_rejections(self, users: list[User]) -> list[User]:
+        """Deliver deltas so that a user the node rejects cannot hold back the others.
+
+        The node fails a whole batch when its backend cannot apply one user in it, and a failed claim
+        stays at the head of the queue. A rejected batch is split in halves until the rejected users
+        are alone, so everyone else is delivered; users rejected before are sent alone right away.
+        A transport or availability failure is not split: the rest of the claim is retried as a whole.
+        """
+        retry: list[User] = []
+        batches = [[user] for user in users if user.email in self._sync_rejections]
+        fresh = [user for user in users if user.email not in self._sync_rejections]
+        if fresh:
+            batches.append(fresh)
+        while batches:
+            batch = batches.pop()
+            failed = await self.sync_users_chunked(
+                batch, chunk_size=self._sync_chunk_size, flush_pending=False, timeout=self._internal_timeout
+            )
+            if not failed:
+                for user in batch:
+                    self._sync_rejections.pop(user.email, None)
+            elif not getattr(failed, "rejected", False):
+                retry += failed
+                for rest in batches:
+                    retry += rest
+                return retry
+            elif len(batch) > 1:
+                middle = len(batch) // 2
+                batches += [batch[middle:], batch[:middle]]
+            elif self._keep_rejected_user(batch[0], failed.detail):
+                retry.append(batch[0])
+        return retry
+
+    def _keep_rejected_user(self, user: User, detail: str) -> bool:
+        """Count a node rejection of one user's delta; False means drop it from the queue.
+
+        A rejection depends only on the node config and the payload, and a change to either sends the
+        user again (a new revision, or Start with every user), so a few spaced retries are enough.
+        A removal is never dropped: that would leave a disabled or deleted user on the node.
+        """
+        attempts = self._sync_rejections.get(user.email, 0) + 1
+        if attempts < self._sync_rejection_limit or not user.inbounds:
+            self._sync_rejections[user.email] = attempts
+            self.logger.warning(
+                f"[{self.name}] Node rejected user {user.email} (attempt {attempts}); "
+                f"retrying it without holding back other users | Error: {detail}"
+            )
+            return True
+        self._sync_rejections.pop(user.email, None)
+        self.logger.error(
+            f"[{self.name}] Node rejected user {user.email} {attempts} times; dropping this queued update. "
+            f"It is sent again when the user changes or the node gets a full sync | Error: {detail}"
+        )
+        return False
 
     async def _sync_worker(self):
         """Drain bounded batches, retaining wakes and retrying failures with backoff."""

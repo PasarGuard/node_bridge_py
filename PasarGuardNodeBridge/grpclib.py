@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 
 from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
+from grpclib.const import Status
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 from python_socks.async_.asyncio import Proxy
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
-from PasarGuardNodeBridge.controller import Health, NodeAPIError
+from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
@@ -335,7 +336,14 @@ class Node(PasarGuardNode):
                 self.logger.warning(
                     f"[{self.name}] Chunked gRPC sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
                 )
-                return users
+                # The node answers INTERNAL "failed to update users" when its backend refused the batch;
+                # anything else (UNAVAILABLE, a failed stream, a timeout) is a transport or availability error.
+                rejected = (
+                    isinstance(e, GRPCError)
+                    and e.status is Status.INTERNAL
+                    and (e.message or "").startswith("failed to update users")
+                )
+                return FailedUsers(users, rejected=rejected, detail=e.message if rejected else str(e))
 
     async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
         timeout = timeout or self._default_timeout

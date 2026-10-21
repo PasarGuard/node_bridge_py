@@ -138,6 +138,13 @@ storage reads, an optional resolver, waiting for the transport lock, and sending
 all chunks. Delivery is cancelled before the lease expires. Failed deliveries
 and storage errors retry with exponential backoff up to 30 seconds.
 
+A node fails the whole batch when it cannot apply one user in it. Such a rejected
+batch is split until the rejected users are alone, so everyone else is still
+delivered; a rejected user is retried with the same backoff and dropped from the
+queue (with an error log) after 3 rejections. Removals (users without inbounds)
+are never dropped. `sync_users_chunked` sets `rejected=True` on its returned
+failed list for such node rejections; transport errors are retried as a whole.
+
 `disconnect()` stops this controller's worker and preserves shared queued work.
 `connect()` wakes the worker to recover it. An external producer that writes
 directly to the store should also notify a healthy controller with

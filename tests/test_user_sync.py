@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import unittest
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 from PasarGuardNodeBridge.common.service_pb2 import Empty, User
-from PasarGuardNodeBridge.controller import Controller, NodeAPIError
+from PasarGuardNodeBridge.controller import Controller, FailedUsers, NodeAPIError
 from PasarGuardNodeBridge.storage import InMemoryUserSyncStore
 
 
@@ -249,6 +250,91 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await node.connect("0.2.0", "1.0.0")
         await eventually(lambda: node.sync_users_chunked.await_count == 2)
         self.assertEqual(node.sync_users_chunked.call_args.args[0], [users[1]])
+
+    def refuse(self, node, refused):
+        """Fail any batch holding a user for which refused(user) is true, as the node's backend does."""
+        sends = []
+
+        async def send(users, **kwargs):
+            sends.append([user.email for user in users])
+            if any(refused(user) for user in users):
+                return FailedUsers(users, rejected=True, detail="proxy is not a UserManager")
+            node.delivered.extend(users)
+            return []
+
+        node.sync_users_chunked = send
+        return sends
+
+    @contextmanager
+    def fast_backoff(self):
+        sleep = asyncio.sleep
+
+        async def short_sleep(delay, result=None):
+            return await sleep(min(delay, 0.01), result)
+
+        with patch("asyncio.sleep", short_sleep):
+            yield
+
+    async def test_rejected_users_are_isolated_and_the_rest_delivered_in_one_round(self):
+        node = self.node()
+        self.refuse(node, lambda user: user.email in {"2", "7"})
+        await node.update_users([User(email=str(i), inbounds=["ss"]) for i in range(10)])
+        await node.connect("0.2.0", "1.0.0")
+        await eventually(lambda: len(node.delivered) == 8)
+        self.assertEqual(node._sync_rejections, {"2": 1, "7": 1})
+
+    async def test_rejected_update_is_dropped_but_a_newer_revision_is_kept(self):
+        node = self.node()
+        node._sync_rejection_limit = 1
+        self.refuse(node, lambda user: "ss" in user.inbounds)
+        refusing = node.sync_users_chunked
+
+        async def send(users, **kwargs):
+            if "ss" in users[0].inbounds:
+                # The admin fixes the user while the rejected revision is in flight.
+                await node.update_user(User(email="a", inbounds=["vless"]))
+            return await refusing(users, **kwargs)
+
+        node.sync_users_chunked = send
+        with self.assertLogs("sync-test", logging.ERROR) as logs:
+            await node.update_user(User(email="a", inbounds=["ss"]))
+            await node.connect("0.2.0", "1.0.0")
+            await eventually(lambda: len(node.delivered) == 1)
+        self.assertEqual(list(node.delivered[0].inbounds), ["vless"])
+        self.assertIn("dropping this queued update", logs.output[0])
+        self.assertFalse(await node._user_sync_store.has_pending("node"))
+
+    async def test_rejected_removal_is_never_dropped_and_holds_nothing_back(self):
+        node = self.node()
+        sends = self.refuse(node, lambda user: user.email == "gone")
+        with self.fast_backoff():
+            await node.update_user(User(email="gone"))
+            await node.connect("0.2.0", "1.0.0")
+            await eventually(lambda: sends.count(["gone"]) > node._sync_rejection_limit)
+            await node.update_user(User(email="later", inbounds=["vless"]))
+            await eventually(lambda: [user.email for user in node.delivered] == ["later"])
+        self.assertTrue(await node._user_sync_store.has_pending("node"))
+
+    async def test_transport_failure_while_isolating_retries_the_rest_whole(self):
+        node = self.node()
+        sends = []
+
+        async def send(users, **kwargs):
+            sends.append([user.email for user in users])
+            if len(sends) == 1:
+                return FailedUsers(users, rejected=True, detail="refused")
+            if len(sends) == 2:
+                return FailedUsers(users, detail="connection reset")
+            node.delivered.extend(users)
+            return []
+
+        node.sync_users_chunked = send
+        with self.fast_backoff():
+            await node.update_users([User(email=email, inbounds=["vless"]) for email in "abcd"])
+            await node.connect("0.2.0", "1.0.0")
+            await eventually(lambda: len(node.delivered) == 4)
+        self.assertEqual(sends, [list("abcd"), list("ab"), list("abcd")])
+        self.assertEqual(node._sync_rejections, {})
 
     async def test_disconnect_during_delivery_requeues_owned_claim(self):
         store = InMemoryUserSyncStore()

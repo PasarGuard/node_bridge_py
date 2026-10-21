@@ -10,7 +10,7 @@ from google.protobuf.message import DecodeError, Message
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientSession, buffer_response, make_timeout
 from PasarGuardNodeBridge.common import service_pb2 as service
-from PasarGuardNodeBridge.controller import Health, NodeAPIError
+from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url
 
@@ -381,7 +381,15 @@ class Node(PasarGuardNode):
                 self.logger.warning(
                     f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
                 )
-                return users
+                # The node answers 500 with its backend's error when it refused the batch. Its middleware
+                # answers "backend not initialized" (also 500) or 503 when no core runs: not a rejection.
+                detail = e.response.text.strip() if isinstance(e, BufferedStatusError) else ""
+                rejected = (
+                    isinstance(e, BufferedStatusError)
+                    and e.response.status_code == 500
+                    and detail != "backend not initialized"
+                )
+                return FailedUsers(users, rejected=rejected, detail=detail if rejected else str(e))
 
     async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
         timeout = timeout or self._default_timeout
