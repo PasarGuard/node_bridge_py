@@ -255,12 +255,11 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
         }
         for transport, start in (("grpc", self.start_grpc), ("rest", self.start_rest)):
             with self.subTest(transport=transport):
-                batches, delivered, delivered_at_rejection = [], [], []
+                batches, delivered = [], []
 
                 def apply(emails):
                     batches.append(emails)
                     if "bad" in emails:
-                        delivered_at_rejection.append(len(delivered))
                         return rejections[transport]()
                     delivered.extend(emails)
                     return None
@@ -268,11 +267,9 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 node = await start(apply)
                 emails = [f"user-{i}" for i in range(150)]
                 await self.drain(node, ["bad", *emails], inbounds=["ss2022"])
+                # The queue drained with the rejected user held aside, not at its head.
                 self.assertCountEqual(delivered, emails)
-                # Everyone else was delivered while the rejected user was still being retried.
-                self.assertEqual(delivered_at_rejection[-1], 150)
-                self.assertEqual(batches[-1], ["bad"])
-                self.assertEqual(len(node._sync_rejections), 0)
+                self.assertEqual(list(node._sync_retries), ["bad"])
                 self.assertLess(len(batches), 30)
 
     async def test_only_backend_rejections_are_split(self):
