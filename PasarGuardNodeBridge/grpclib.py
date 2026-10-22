@@ -339,12 +339,13 @@ class Node(PasarGuardNode):
                 self.logger.warning(
                     f"[{self.name}] Chunked gRPC sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
                 )
-                # The node answers INTERNAL "failed to update users" when its backend refused the batch;
-                # anything else (UNAVAILABLE, a failed stream, a timeout) is a transport or availability error.
+                # The node answers INTERNAL "failed to update users" (or "user sync failed" on nodes that
+                # hide the backend error) when its backend refused the batch; anything else (UNAVAILABLE,
+                # a failed stream, a timeout) is a transport or availability error.
                 rejected = (
                     isinstance(e, GRPCError)
                     and e.status is Status.INTERNAL
-                    and (e.message or "").startswith("failed to update users")
+                    and (e.message or "").startswith(("failed to update users", "user sync failed"))
                 )
                 return FailedUsers(users, rejected=rejected, detail=e.message if rejected else str(e))
 

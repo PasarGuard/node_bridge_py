@@ -384,13 +384,14 @@ class Node(PasarGuardNode):
                 self.logger.warning(
                     f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
                 )
-                # The node answers 500 with its backend's error when it refused the batch. Its middleware
-                # answers "backend not initialized" (also 500) or 503 when no core runs: not a rejection.
+                # The node answers 500 with its backend's error when it refused the batch. It answers
+                # "backend not initialized" or "backend is not started" (also 500) or 503 when no core
+                # runs: not a rejection.
                 detail = e.response.text.strip() if isinstance(e, BufferedStatusError) else ""
                 rejected = (
                     isinstance(e, BufferedStatusError)
                     and e.response.status_code == 500
-                    and detail != "backend not initialized"
+                    and detail not in ("backend not initialized", "backend is not started")
                 )
                 return FailedUsers(users, rejected=rejected, detail=detail if rejected else str(e))
 

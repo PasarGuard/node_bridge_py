@@ -275,15 +275,17 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
         # The node fails the whole batch when its backend cannot apply one user in it, e.g. an
         # SS2022 inbound Xray started without clients ("proxy is not a UserManager").
         reason = "failed to update users:\napp/proxyman/command: proxy is not a UserManager"
-        rejections = {
-            "grpc": lambda: GRPCError(Status.INTERNAL, f"failed to update users: {reason}"),
-            "rest": lambda: web.Response(status=500, text=reason + "\n"),
-        }
-        for transport, start in (("grpc", self.start_grpc), ("rest", self.start_rest)):
+        rejections = [
+            ("grpc", self.start_grpc, lambda: GRPCError(Status.INTERNAL, f"failed to update users: {reason}")),
+            # Nodes that hide the backend error from gRPC clients answer only "user sync failed".
+            ("grpc-sanitized", self.start_grpc, lambda: GRPCError(Status.INTERNAL, "user sync failed")),
+            ("rest", self.start_rest, lambda: web.Response(status=500, text=reason + "\n")),
+        ]
+        for transport, start, rejection in rejections:
             with self.subTest(transport=transport):
                 batches, delivered = [], []
 
-                def apply(emails, batches=batches, delivered=delivered, rejection=rejections[transport]):
+                def apply(emails, batches=batches, delivered=delivered, rejection=rejection):
                     batches.append(emails)
                     if "bad" in emails:
                         return rejection()
@@ -315,12 +317,17 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
             (GRPCError(Status.INTERNAL, "failed to update users: failed to update users:\nboom"), True),
             (GRPCError(Status.INTERNAL, "failed to receive chunk: stream reset"), False),
             (GRPCError(Status.UNAVAILABLE, "core is not started yet"), False),
+            (GRPCError(Status.INTERNAL, "user sync failed"), True),
+            (GRPCError(Status.UNAVAILABLE, "user sync failed"), False),
+            (GRPCError(Status.FAILED_PRECONDITION, "stale user sync epoch 2; current epoch is 3"), False),
         ]
         rest_cases = [
             (web.Response(status=500, text="failed to update users:\nboom\n"), True),
             (web.Response(status=500, text="wireguard public key k is already assigned to user 3\n"), True),
             (web.Response(status=500, text="backend not initialized\n"), False),
             (web.Response(status=503, text="core is not started yet\n"), False),
+            (web.Response(status=500, text="backend is not started\n"), False),
+            (web.Response(status=412, text="stale user sync epoch 2; current epoch is 3\n"), False),
         ]
         for start, cases in ((self.start_grpc, grpc_cases), (self.start_rest, rest_cases)):
             answers = []
