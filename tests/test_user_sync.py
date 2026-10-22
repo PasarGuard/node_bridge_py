@@ -83,6 +83,17 @@ class QueueStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.store.ack_users("node", [new[0].token])
         self.assertFalse(await self.store.has_pending("node"))
 
+    async def test_enqueue_if_absent_keeps_queued_and_leased_entries(self):
+        await self.store.enqueue_users_if_absent("node", [self.old])
+        old = await self.claim()
+        self.assertEqual(old[0].user, self.old)
+        await self.store.enqueue_users_if_absent("node", [self.new])  # leased: kept
+        await self.store.ack_users("node", [old[0].token])
+        self.assertFalse(await self.store.has_pending("node"))
+        await self.store.enqueue_users("node", [self.new])
+        await self.store.enqueue_users_if_absent("node", [self.old])  # newer queued: kept
+        self.assertEqual((await self.claim())[0].user, self.new)
+
     async def test_requeue_uses_latest_store_payload_not_mutated_claim(self):
         await self.store.enqueue_users("node", [self.old])
         claim = await self.claim()
@@ -276,7 +287,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             yield
 
     def fast_retries(self, node, window=600.0):
-        node._sync_retry_delays = (0.01, 0.02)
+        node._sync_retry_delays = (0.01, 0.02, 10.0)
         node._sync_retry_window = window
 
     async def queue_drained(self, node):
@@ -323,29 +334,49 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await eventually(lambda: not node._sync_retries)
         self.assertEqual(sends.count(["a"]), 3)
 
-    async def test_rejected_add_is_dropped_after_the_retry_window(self):
+    async def test_rejected_add_is_never_dropped(self):
         node = self.node()
         self.fast_retries(node, window=0.1)
-        sends = self.refuse(node, lambda user: user.email == "a")
+        refusing = {"a"}
+        sends = self.refuse(node, lambda user: user.email in refusing)
+
+        async def retry_now():
+            count = len(sends)
+            node._sync_retries["a"].next_attempt = 0
+            await node.wake_sync_worker()
+            await eventually(lambda: len(sends) > count)
+
         with self.assertLogs("sync-test", logging.ERROR) as logs:
             await node.update_user(User(email="a", inbounds=["ss"]))
             await node.connect("0.2.0", "1.0.0")
-            await eventually(lambda: sends and not node._sync_retries)
-        self.assertEqual(node.delivered, [])
-        self.assertGreater(sends.count(["a"]), 2)
+            await eventually(lambda: "a" in node._sync_retries and node._sync_retries["a"].reported)
+            # Past the window the add is retried at the slow delay (10 s here), and not dropped.
+            count = len(sends)
+            await asyncio.sleep(0.1)
+            self.assertEqual(len(sends), count)
+            self.assertIn("a", node._sync_retries)
+            await retry_now()
+            await eventually(lambda: node._sync_retries["a"].queued_at is None)
         self.assertEqual(len(logs.output), 1)
         self.assertIn("user a", logs.output[0])
-        self.assertIn("dropping this update", logs.output[0])
+        self.assertIn("retrying until it is accepted", logs.output[0])
         self.assertIn("proxy is not a UserManager", logs.output[0])
-        self.assertFalse(await node._user_sync_store.has_pending("node"))
+        self.assertEqual(node.delivered, [])
+        refusing.clear()
+        await retry_now()
+        await eventually(lambda: not node._sync_retries)
+        self.assertEqual([user.email for user in node.delivered], ["a"])
 
     async def test_rejected_removal_is_never_dropped(self):
         node = self.node()
         self.fast_retries(node, window=0.05)
         sends = self.refuse(node, lambda user: user.email == "gone")
-        await node.update_user(User(email="gone"))
-        await node.connect("0.2.0", "1.0.0")
-        await eventually(lambda: sends.count(["gone"]) > 8)
+        with self.assertLogs("sync-test", logging.ERROR) as logs:
+            await node.update_user(User(email="gone"))
+            await node.connect("0.2.0", "1.0.0")
+            # Past the window a removal keeps the short cap instead of the slow delay.
+            await eventually(lambda: sends.count(["gone"]) > 8)
+        self.assertEqual(len(logs.output), 1)
         self.assertIn("gone", node._sync_retries)
         await node.update_user(User(email="later", inbounds=["vless"]))
         await eventually(lambda: [user.email for user in node.delivered] == ["later"])
@@ -378,7 +409,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("b", node._sync_retries)
         await eventually(lambda: len(node.delivered) == 2)
 
-        # Held, then changed by another producer writing to the shared store: gone once claimed.
+        # Held, then changed by another producer writing to the shared store: gone once delivered.
         await node.update_user(User(email="c", inbounds=["ss"]))
         await eventually(lambda: "c" in node._sync_retries)
         await store.enqueue_users("node", [User(email="c", inbounds=["vless"])])
@@ -398,7 +429,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         refusing = node.sync_users_chunked
 
         async def send(users, **kwargs):
-            if [user.email for user in users] == ["a"] and "a" in node._sync_retries:
+            if [(user.email, list(user.inbounds)) for user in users] == [("a", ["ss"])] and "a" in node._sync_retries:
                 # This is the retry of the held payload; a newer change arrives meanwhile.
                 await node.update_user(User(email="a", inbounds=["vless"]))
             return await refusing(users, **kwargs)
@@ -411,6 +442,77 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         self.assertEqual(node._sync_retries, {})
         self.assertEqual(len(node.delivered), 1)
+
+    async def test_retry_of_a_rejected_user_cannot_land_after_a_newer_change(self):
+        # Two workers share the store and, like the panel, read the current state right before
+        # each send. Worker A's retry of a rejected user reads the old state and is slow to send
+        # (node lock busy); meanwhile the user changes and worker B picks up the newer change.
+        store = InMemoryUserSyncStore()
+        current = {"x": ["v1"]}
+        on_node, applied, sends = {}, [], []
+        retry_read, release = asyncio.Event(), asyncio.Event()
+
+        def worker(name):
+            node = self.node(store, worker_id=name)
+
+            async def send(users, **kwargs):
+                fresh = [User(email=user.email, inbounds=current[user.email]) for user in users]
+                sends.append(name)
+                if sends == ["A"]:
+                    return FailedUsers(users, rejected=True, detail="proxy is not a UserManager")
+                if sends == ["A", "A"]:
+                    retry_read.set()
+                    await release.wait()
+                for user in fresh:
+                    on_node[user.email] = list(user.inbounds)
+                    applied.append((name, list(user.inbounds)))
+                return []
+
+            node.sync_users_chunked = send
+            return node
+
+        a, b = worker("A"), worker("B")
+        a._sync_retry_delays = (0.01, 0.02, 0.02)
+        await a.update_user(User(email="x", inbounds=["v1"]))
+        await a.connect("0.2.0", "1.0.0")
+        await eventually(retry_read.is_set)
+        current["x"] = ["v2"]
+        await b.update_user(User(email="x", inbounds=["v2"]))
+        await b.connect("0.2.0", "1.0.0")
+        await asyncio.sleep(0.1)  # B may deliver whatever it can claim
+        release.set()
+        await eventually(lambda: len(applied) >= 2)
+        await asyncio.sleep(0.1)
+        self.assertEqual(on_node["x"], ["v2"], applied)
+        self.assertEqual(applied[-1][1], ["v2"])
+        self.assertFalse(await store.has_pending("node"))
+
+    async def test_due_rejected_users_go_back_through_the_store(self):
+        store = InMemoryUserSyncStore()
+        node = self.node(store)
+        held = User(email="x", inbounds=["ss"])
+
+        async def queue_due():
+            node._sync_retries["x"].next_attempt = 0
+            await node._queue_due_rejected_users()
+            self.assertIsNotNone(node._sync_retries["x"].queued_at)
+
+        node._hold_rejected_user(held, "refused")
+        await queue_due()
+        claimed = await store.claim_users("node", "other", 10, 30)
+        self.assertEqual([item.user for item in claimed], [held])
+
+        # A store that re-derives current state gets a refresh request, not the held payload.
+        store.request_refresh = AsyncMock()
+        node._hold_rejected_user(held, "refused")
+        await queue_due()
+        store.request_refresh.assert_awaited_once_with("node", ["x"])
+
+        # Another worker delivered it: the entry waits for a claim here and is forgotten after the window.
+        node._sync_retry_window = 0.05
+        await asyncio.sleep(0.06)
+        await node._queue_due_rejected_users()
+        self.assertEqual(node._sync_retries, {})
 
     async def test_rejected_users_wait_for_a_full_sync_fence(self):
         store = InMemoryUserSyncStore()

@@ -140,14 +140,28 @@ and storage errors retry with exponential backoff up to 30 seconds.
 
 A node fails the whole batch when it cannot apply one user in it. Such a rejected
 batch is split until the rejected users are alone, so everyone else is still
-delivered. The rejected users leave the queue and are retried on the side, so
-they never hold back later updates: retries back off from 2 seconds to 60
-seconds for about 10 minutes, then the update is dropped with an error log.
-Removals (users without inbounds) are never dropped. A newer update for the same
-user replaces the held one, and a successful `start(...)`, `sync_users(...)` or
-`flush_pending_users()` clears them. Held retries live in this controller's
-memory. `sync_users_chunked` sets `rejected=True` on its returned failed list
-for such node rejections; transport errors are retried as a whole.
+delivered. The rejected users leave the queue and are queued again after a
+backoff, so they never hold back later updates: 2 seconds doubling to 60
+seconds; after about 10 minutes an add is retried every 5 minutes (a removal
+stays at 60 seconds) and one error is logged for that user. Nothing is dropped.
+A retry goes back through the store and is claimed with a lease like any other
+update, so a newer update for the same user always wins: the controller calls
+the store's `request_refresh(node_id, emails)` when it has one, otherwise
+`enqueue_users_if_absent(node_id, users)` (the default store has it), otherwise
+`enqueue_users` with the held payload, which could replace a newer update
+written by another producer. A newer update through this controller forgets the
+user's backoff, and a successful `start(...)`, `sync_users(...)` or
+`flush_pending_users()` clears all of them. The backoff state lives in this
+controller's memory, one entry per user; with several workers on one store each
+keeps its own, and a clear on one does not reach the others (their next retry
+re-queues the user, which is harmless when the store re-derives current state or
+a `user_sync_resolver` is set). With several controllers on one store, set a
+`user_sync_resolver` (or use a store with `request_refresh`) so every delivery
+reads the current state: without one, an older held payload can still be
+delivered after a newer one that the node also rejected and that is waiting in
+another controller's backoff. `sync_users_chunked` sets `rejected=True` on its
+returned failed list for such node rejections; transport errors are retried as
+a whole.
 
 `disconnect()` stops this controller's worker and preserves shared queued work.
 `connect()` wakes the worker to recover it. An external producer that writes
