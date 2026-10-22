@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 
 from grpclib.client import Channel, Stream
 from grpclib.config import Configuration
+from grpclib.const import Status
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 from python_socks.async_.asyncio import Proxy
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
-from PasarGuardNodeBridge.controller import Health, NodeAPIError
+from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
@@ -176,6 +177,7 @@ class Node(PasarGuardNode):
                 except Exception as e:
                     await self.disconnect()
                     self._handle_error(e)
+                self._clear_rejected_users()
 
                 await self._release_lifecycle_lease(
                     lease,
@@ -288,11 +290,13 @@ class Node(PasarGuardNode):
             await self.flush_pending_users()
 
         async with self._node_lock:
-            return await self._handle_grpc_request(
+            response = await self._handle_grpc_request(
                 method=self._client.SyncUsers,
                 request=service.Users(users=users),
                 timeout=timeout,
             )
+        self._clear_rejected_users()
+        return response
 
     async def sync_users_chunked(
         self,
@@ -335,7 +339,15 @@ class Node(PasarGuardNode):
                 self.logger.warning(
                     f"[{self.name}] Chunked gRPC sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
                 )
-                return users
+                # The node answers INTERNAL "failed to update users" (or "user sync failed" on nodes that
+                # hide the backend error) when its backend refused the batch; anything else (UNAVAILABLE,
+                # a failed stream, a timeout) is a transport or availability error.
+                rejected = (
+                    isinstance(e, GRPCError)
+                    and e.status is Status.INTERNAL
+                    and (e.message or "").startswith(("failed to update users", "user sync failed"))
+                )
+                return FailedUsers(users, rejected=rejected, detail=e.message if rejected else str(e))
 
     async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
         timeout = timeout or self._default_timeout
