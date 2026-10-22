@@ -101,6 +101,18 @@ user = Bridge.create_user(
 )
 ```
 
+For an MTProto node, pass the user's secret (32 hex characters). `proxies.mtproto` is set only when the secret is not
+blank. A limit of `None` or `0` means no per-user limit.
+
+```python
+proxies = Bridge.create_proxy(
+    mtproto_secret="0123456789abcdef0123456789abcdef",
+    mtproto_user_ad_tag=None,     # optional, 32 hex characters
+    mtproto_max_tcp_conns=None,   # optional
+    mtproto_max_unique_ips=None,  # optional
+)
+```
+
 ## Start/Stop Lifecycle
 
 You should `start()` before calling stats/sync/log methods.
@@ -108,7 +120,7 @@ You should `start()` before calling stats/sync/log methods.
 ```python
 await node.start(
     config=config_json_string,
-    backend_type=service.BackendType.XRAY,   # or service.BackendType.WIREGUARD
+    backend_type=service.BackendType.XRAY,   # or service.BackendType.WIREGUARD / service.BackendType.MTPROTO
     users=[user],                             # optional initial user set
     keep_alive=30,                            # optional
     exclude_inbounds=[],                      # optional
