@@ -18,6 +18,8 @@ from PasarGuardNodeBridge.grpclib import Node as GrpcNode
 from PasarGuardNodeBridge.rest import Node as RestNode
 from PasarGuardNodeBridge.storage import InMemoryUserSyncStore
 
+STARTED = service.BaseInfoResponse(started=True, node_version="0.5.4", core_version="26.10.10")
+
 
 class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
     def make_node(self, node_class, port, **kwargs):
@@ -36,8 +38,9 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 **kwargs,
             )
 
-    async def drain(self, node, emails):
-        await node._user_sync_store.enqueue_users(node.node_id, [service.User(email=email) for email in emails])
+    async def drain(self, node, emails, inbounds=()):
+        users = [service.User(email=email, inbounds=inbounds) for email in emails]
+        await node._user_sync_store.enqueue_users(node.node_id, users)
         await node.connect("0.2.0", "1.0.0")
         async with asyncio.timeout(10):
             while await node._user_sync_store.has_pending(node.node_id):
@@ -160,6 +163,196 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
             await node._client.close()
             await node._json_client.close()
             await runner.cleanup()
+
+    async def start_grpc(self, apply):
+        """A SyncUsersChunked server answering like the node: INTERNAL when apply() refuses the batch."""
+
+        class Receiver:
+            async def receive(inner, stream):
+                emails = [user.email async for chunk in stream for user in chunk.users]
+                error = apply(emails)
+                if error is not None:
+                    raise error
+                await stream.send_message(service.Empty())
+
+            async def start(inner, stream):
+                await stream.recv_message()
+                await stream.send_message(STARTED)
+
+            async def snapshot(inner, stream):
+                await stream.recv_message()
+                await stream.send_message(service.Empty())
+
+            def __mapping__(inner):
+                return {
+                    "/service.NodeService/SyncUsersChunked": Handler(
+                        inner.receive, Cardinality.STREAM_UNARY, service.UsersChunk, service.Empty
+                    ),
+                    "/service.NodeService/Start": Handler(
+                        inner.start, Cardinality.UNARY_UNARY, service.Backend, service.BaseInfoResponse
+                    ),
+                    "/service.NodeService/SyncUsers": Handler(
+                        inner.snapshot, Cardinality.UNARY_UNARY, service.Users, service.Empty
+                    ),
+                }
+
+        server = Server([Receiver()])
+        await server.start("127.0.0.1", 0)
+        port = server._server.sockets[0].getsockname()[1]
+        node = self.make_node(GrpcNode, port)
+        node.channel.close()
+        node.channel = Channel("127.0.0.1", port, ssl=False)
+        node._client = service_grpc.NodeServiceStub(node.channel)
+
+        async def cleanup():
+            await node.disconnect()
+            node.channel.close()
+            await node._json_client.close()
+            server.close()
+            await server.wait_closed()
+
+        self.addAsyncCleanup(cleanup)
+        return node
+
+    async def start_rest(self, apply):
+        """A /users/sync/chunked server answering like the node: an error status when apply() refuses."""
+
+        async def receive(request):
+            body = await request.read()
+            emails, offset = [], 0
+            while offset < len(body):
+                length = shift = 0
+                while True:
+                    byte = body[offset]
+                    offset += 1
+                    length |= (byte & 127) << shift
+                    if byte < 128:
+                        break
+                    shift += 7
+                emails += [user.email for user in service.UsersChunk.FromString(body[offset : offset + length]).users]
+                offset += length
+            error = apply(emails)
+            if error is not None:
+                return error
+            return web.Response(body=service.Empty().SerializeToString())
+
+        async def start(request):
+            await request.read()
+            return web.Response(body=STARTED.SerializeToString())
+
+        async def snapshot(request):
+            await request.read()
+            return web.Response(body=service.Empty().SerializeToString())
+
+        app = web.Application()
+        app.router.add_put("/users/sync/chunked", receive)
+        app.router.add_post("/start", start)
+        app.router.add_put("/users/sync", snapshot)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        node = self.make_node(RestNode, port)
+        await node._client.close()
+        node._client = LazyClientSession(
+            ssl_context=None,
+            headers={"Content-Type": "application/x-protobuf"},
+            base_url=f"http://127.0.0.1:{port}/",
+            timeout=make_timeout(None),
+        )
+
+        async def cleanup():
+            await node.disconnect()
+            await node._client.close()
+            await node._json_client.close()
+            await runner.cleanup()
+
+        self.addAsyncCleanup(cleanup)
+        return node
+
+    async def test_user_the_node_rejects_does_not_hold_back_later_users(self):
+        # The node fails the whole batch when its backend cannot apply one user in it, e.g. an
+        # SS2022 inbound Xray started without clients ("proxy is not a UserManager").
+        reason = "failed to update users:\napp/proxyman/command: proxy is not a UserManager"
+        rejections = [
+            ("grpc", self.start_grpc, lambda: GRPCError(Status.INTERNAL, f"failed to update users: {reason}")),
+            # Nodes that hide the backend error from gRPC clients answer only "user sync failed".
+            ("grpc-sanitized", self.start_grpc, lambda: GRPCError(Status.INTERNAL, "user sync failed")),
+            ("rest", self.start_rest, lambda: web.Response(status=500, text=reason + "\n")),
+        ]
+        for transport, start, rejection in rejections:
+            with self.subTest(transport=transport):
+                batches, delivered = [], []
+
+                def apply(emails, batches=batches, delivered=delivered, rejection=rejection):
+                    batches.append(emails)
+                    if "bad" in emails:
+                        return rejection()
+                    delivered.extend(emails)
+                    return None
+
+                node = await start(apply)
+                emails = [f"user-{i}" for i in range(150)]
+                await self.drain(node, ["bad", *emails], inbounds=["ss2022"])
+                # The queue drained with the rejected user held aside, not at its head.
+                self.assertCountEqual(delivered, emails)
+                self.assertEqual(list(node._sync_retries), ["bad"])
+                self.assertLess(len(batches), 30)
+
+    async def test_start_and_full_sync_forget_users_held_for_retry(self):
+        held = service.User(email="held", inbounds=["ss2022"])
+        for start in (self.start_grpc, self.start_rest):
+            node = await start(lambda emails: None)
+            with self.subTest(transport=node.__module__):
+                node._hold_rejected_user(held, "proxy is not a UserManager")
+                await node.sync_users([held])
+                self.assertEqual(node._sync_retries, {})
+                node._hold_rejected_user(held, "proxy is not a UserManager")
+                await node.start(config="{}", backend_type=0, users=[held])
+                self.assertEqual(node._sync_retries, {})
+
+    async def test_only_backend_rejections_are_split(self):
+        grpc_cases = [
+            (GRPCError(Status.INTERNAL, "failed to update users: failed to update users:\nboom"), True),
+            (GRPCError(Status.INTERNAL, "failed to receive chunk: stream reset"), False),
+            (GRPCError(Status.UNAVAILABLE, "core is not started yet"), False),
+            (GRPCError(Status.INTERNAL, "user sync failed"), True),
+            (GRPCError(Status.UNAVAILABLE, "user sync failed"), False),
+            (GRPCError(Status.FAILED_PRECONDITION, "stale user sync epoch 2; current epoch is 3"), False),
+        ]
+        rest_cases = [
+            (web.Response(status=500, text="failed to update users:\nboom\n"), True),
+            (web.Response(status=500, text="wireguard public key k is already assigned to user 3\n"), True),
+            (web.Response(status=500, text="backend not initialized\n"), False),
+            (web.Response(status=503, text="core is not started yet\n"), False),
+            (web.Response(status=500, text="backend is not started\n"), False),
+            (web.Response(status=412, text="stale user sync epoch 2; current epoch is 3\n"), False),
+        ]
+        for start, cases in ((self.start_grpc, grpc_cases), (self.start_rest, rest_cases)):
+            answers = []
+            node = await start(lambda emails, answers=answers: answers.pop(0))
+            for answer, rejected in cases:
+                with self.subTest(transport=node.__module__, answer=str(answer)):
+                    answers.append(answer)
+                    users = [service.User(email="a"), service.User(email="b")]
+                    failed = await node.sync_users_chunked(users)
+                    self.assertEqual(failed, users)
+                    self.assertIs(failed.rejected, rejected)
+
+        for node_class in (GrpcNode, RestNode):
+            with self.subTest(transport=node_class.__module__, answer="connection refused"):
+                node = self.make_node(node_class, 1)
+                try:
+                    failed = await node.sync_users_chunked([service.User(email="a")])
+                    self.assertEqual(len(failed), 1)
+                    self.assertFalse(failed.rejected)
+                finally:
+                    await node._json_client.close()
+                    if isinstance(node, GrpcNode):
+                        node.channel.close()
+                    else:
+                        await node._client.close()
 
     async def test_transport_lock_wait_cannot_outlive_claim_lease(self):
         for node_class in (GrpcNode, RestNode):

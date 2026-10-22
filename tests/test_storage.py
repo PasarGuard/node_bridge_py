@@ -90,6 +90,10 @@ class InMemoryNodeRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await registry.get_node("node-1"))
 
 
+# Windows' monotonic clock advances in steps of about 15.6 ms, so a 10 ms sleep may not reach a 1 ms lease's expiry.
+_PAST_A_CLOCK_TICK = 0.05
+
+
 class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_lifecycle_lease_is_exclusive(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
@@ -125,7 +129,7 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_observed_update_is_ignored(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
         first = await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.START, 0.001)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(_PAST_A_CLOCK_TICK)
         second = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.STOP, 30)
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
@@ -139,7 +143,7 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_lifecycle_lease_can_be_reacquired(self):
         coordinator = InMemoryNodeLifecycleCoordinator()
         await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.RECONNECT, 0)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(_PAST_A_CLOCK_TICK)
 
         lease = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.RECONNECT, 30)
 
@@ -151,7 +155,7 @@ class InMemoryNodeLifecycleCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         first = await coordinator.try_acquire("node-1", "worker-1", LifecycleOperation.UPDATE_NODE, 0.001)
         self.assertIs(await coordinator.heartbeat(first), True)
 
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(_PAST_A_CLOCK_TICK)
         second = await coordinator.try_acquire("node-1", "worker-2", LifecycleOperation.START, 30)
         self.assertIsNotNone(second)
         self.assertIs(await coordinator.heartbeat(first), False)

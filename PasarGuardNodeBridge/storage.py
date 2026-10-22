@@ -165,6 +165,17 @@ class InMemoryUserSyncStore:
                 self._revision += 1
                 pending[user.email] = (User.FromString(user.SerializeToString()), self._revision)
 
+    async def enqueue_users_if_absent(self, node_id: str, users: list[User]) -> None:
+        """Queue users that have nothing queued; a queued (newer or leased) entry is kept."""
+        if not users:
+            return
+        async with self._lock:
+            pending = self._pending.setdefault(node_id, {})
+            for user in users:
+                if user.email not in pending:
+                    self._revision += 1
+                    pending[user.email] = (User.FromString(user.SerializeToString()), self._revision)
+
     def _expire_claims(self, node_id: str) -> None:
         claimed = self._claimed.setdefault(node_id, {})
         active = self._active.setdefault(node_id, {})
