@@ -283,10 +283,10 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(transport=transport):
                 batches, delivered = [], []
 
-                def apply(emails):
+                def apply(emails, batches=batches, delivered=delivered, rejection=rejections[transport]):
                     batches.append(emails)
                     if "bad" in emails:
-                        return rejections[transport]()
+                        return rejection()
                     delivered.extend(emails)
                     return None
 
@@ -324,7 +324,7 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
         ]
         for start, cases in ((self.start_grpc, grpc_cases), (self.start_rest, rest_cases)):
             answers = []
-            node = await start(lambda emails: answers.pop(0))
+            node = await start(lambda emails, answers=answers: answers.pop(0))
             for answer, rejected in cases:
                 with self.subTest(transport=node.__module__, answer=str(answer)):
                     answers.append(answer)
