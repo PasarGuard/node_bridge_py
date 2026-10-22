@@ -81,19 +81,25 @@ class _Delivery(list):
     """Users to put back in the queue after a delivery (transport failures).
 
     ``isolated`` lists ``(user, node error)`` for each user the node rejected on its own; they leave
-    the queue and are queued again after a backoff.
+    the queue and are queued again after a backoff. ``deferred`` lists the users of a rejected batch
+    that the round had no sends left to test; they leave the queue and are queued again at once, to be
+    sent one by one if ``deferred_alone`` (the round found as many rejected users as accepted ones).
     """
 
-    def __init__(self, failed=(), isolated=()):
+    def __init__(self, failed=(), isolated=(), deferred=(), deferred_alone=False):
         super().__init__(failed)
         self.isolated = list(isolated)
+        self.deferred = list(deferred)
+        self.deferred_alone = deferred_alone
 
 
 @dataclass(slots=True)
 class _RejectedUser:
     """Backoff of a user the node rejected; the retry itself goes through the queue.
 
-    ``queued_at`` is set while the user is back in the queue waiting for a claim.
+    ``queued_at`` is set while the user is back in the queue waiting for a claim. ``attempts`` stays 0
+    for a user deferred before the node rejected it on its own; ``alone`` then says whether to send it
+    on its own if its batch is rejected again (users rejected before always are).
     """
 
     user: User
@@ -104,6 +110,7 @@ class _RejectedUser:
     attempts: int = 0
     queued_at: float | None = None
     reported: bool = False
+    alone: bool = False
 
 
 class FullSyncHold:
@@ -226,6 +233,10 @@ class Controller:
         # First retry delay, doubled up to the cap; after the window an add is retried at the last delay.
         self._sync_retry_delays = (2.0, 60.0, 300.0)
         self._sync_retry_window = 600.0
+        # Most sends a round spends on a rejected batch (enough to isolate one user among 128), and the
+        # end of the current round, so isolation leaves the rest for the next round instead of overrunning.
+        self._sync_isolation_calls = 16
+        self._sync_round_end = math.inf
 
         # Separate locks for different resources to reduce contention
         self._health_lock = asyncio.Lock()
@@ -649,33 +660,59 @@ class Controller:
 
         The node fails a whole batch when its backend cannot apply one user in it. A rejected batch is
         split in halves until the rejected users are alone; everyone else is delivered and the rejected
-        users are reported as ``isolated``. A transport or availability failure is not split: the rest
-        of the batch is returned to be retried as a whole.
+        users are reported as ``isolated``. Users the node rejected on their own before are sent as one
+        batch, then one by one if it is rejected again: splitting n users who are all rejected takes
+        2n - 1 sends. Once a round has resolved someone, it stops after ``_sync_isolation_calls`` sends
+        or when another send might not end within the round; the users not tested yet are reported as
+        ``deferred``. A transport or availability failure is not split: the rest of the batch is
+        returned to be retried as a whole.
         """
         retry: list[User] = []
         isolated: list[tuple[User, str]] = []
+        deferred: list[tuple[User, str]] = []
+        loop = asyncio.get_running_loop()
+        # A send may take up to the internal timeout: none starts that could outlast the round.
+        stop_at = self._sync_round_end - self._internal_timeout
         # Users the node rejected before go in their own batch, so a repeat rejection does not split the rest.
-        held = [user for user in users if user.email in self._sync_retries]
-        rest = [user for user in users if user.email not in self._sync_retries]
-        batches = [batch for batch in (held, rest) if batch]
+        held = [user for user in users if self._send_alone(user)]
+        held.sort(key=lambda user: self._sync_retries[user.email].attempts > 0)
+        rest = [user for user in users if not self._send_alone(user)]
+        # (batch, alone): alone sends the users of a rejected batch one by one instead of splitting it.
+        batches = [(batch, alone) for batch, alone in ((held, True), (rest, False)) if batch]
+        sends, resolved, accepted, detail = 0, False, 0, ""
         while batches:
-            batch = batches.pop()
+            if resolved and (sends >= self._sync_isolation_calls or loop.time() >= stop_at):
+                deferred += [(user, detail) for batch, _ in batches for user in batch]
+                break
+            batch, alone = batches.pop()
+            sends += 1
             failed = await self.sync_users_chunked(
                 batch, chunk_size=self._sync_chunk_size, flush_pending=False, timeout=self._internal_timeout
             )
             if not failed:
+                resolved = True
+                accepted += len(batch)
                 continue
             if not getattr(failed, "rejected", False):
                 retry += failed
-                for rest in batches:
-                    retry += rest
+                for remaining, _ in batches:
+                    retry += remaining
                 break
-            if len(batch) > 1:
-                middle = len(batch) // 2
-                batches += [batch[middle:], batch[:middle]]
-            else:
+            detail = failed.detail
+            if len(batch) == 1:
+                resolved = True
                 isolated.append((batch[0], failed.detail))
-        return _Delivery(retry, isolated)
+            elif alone:
+                batches += [([user], True) for user in reversed(batch)]
+            else:
+                middle = len(batch) // 2
+                batches += [(batch[middle:], False), (batch[:middle], False)]
+        # Where most users are rejected, sending one by one is cheaper than splitting again.
+        return _Delivery(retry, isolated, deferred, deferred_alone=len(isolated) >= accepted)
+
+    def _send_alone(self, user: User) -> bool:
+        entry = self._sync_retries.get(user.email)
+        return entry is not None and (entry.attempts > 0 or entry.alone)
 
     def _hold_rejected_user(self, user: User, detail: str) -> None:
         """Keep a user the node rejected out of the queue until its next retry is due.
@@ -689,6 +726,8 @@ class Controller:
         if entry is None:
             entry = _RejectedUser(user, detail, since=now, delay=self._sync_retry_delays[0])
             self._sync_retries[user.email] = entry
+        if not entry.attempts:
+            entry.since = now
             self.logger.warning(
                 f"[{self.name}] Node rejected user {user.email}; retrying it with a backoff | Error: {detail}"
             )
@@ -706,6 +745,22 @@ class Controller:
         entry.queued_at = None
         entry.next_attempt = now + (self._sync_retry_delays[2] if late and user.inbounds else entry.delay)
         entry.delay = min(entry.delay * 2, self._sync_retry_delays[1])
+
+    def _defer_untested_user(self, user: User, detail: str, alone: bool) -> None:
+        """Keep a user of a rejected batch that the round had no sends left to test.
+
+        Like a rejected user it goes back through the queue, but at the next round, with no attempt
+        counted and nothing logged, so later users are not held back behind it.
+        """
+        now = asyncio.get_running_loop().time()
+        entry = self._sync_retries.get(user.email)
+        if entry is None:
+            entry = _RejectedUser(user, detail, since=now, delay=self._sync_retry_delays[0])
+            self._sync_retries[user.email] = entry
+        entry.user = user
+        entry.alone = alone
+        entry.queued_at = None
+        entry.next_attempt = now
 
     def _clear_rejected_users(self) -> None:
         """The node was given a full user set: payloads held for retry are older, so forget them."""
@@ -739,6 +794,8 @@ class Controller:
         due = [entry for entry in self._sync_retries.values() if entry.queued_at is None and entry.next_attempt <= now]
         if not due or (await self._fence_state())[0]:
             return
+        # Users deferred untested go first: unlike a retry, they may be users the node accepts.
+        due.sort(key=lambda entry: entry.attempts > 0)
         due = due[: self._sync_batch_size]
         store = self._user_sync_store
         async with asyncio.timeout(self._internal_timeout):
@@ -781,7 +838,8 @@ class Controller:
                     # Store latency, resolver, transport lock and all stream chunks
                     # share one deadline ending before another worker can own the lease.
                     budget = self._sync_lease_seconds - min(1.0, self._sync_lease_seconds / 4)
-                    async with asyncio.timeout(budget):
+                    self._sync_round_end = loop.time() + budget
+                    async with asyncio.timeout_at(self._sync_round_end):
                         claimed = await self._claim_pending_users()
                         if claimed:
                             active, generation = await self._fence_state()
@@ -796,14 +854,18 @@ class Controller:
                         continue
                     # Users the node rejected on their own leave the queue (acked below)
                     # and are queued again after a backoff, so they cannot hold back later work.
+                    # Users the round had no sends left to test are queued again at the next round.
                     isolated = getattr(failed, "isolated", ())
+                    deferred = getattr(failed, "deferred", ())
                     for user, detail in isolated:
                         self._hold_rejected_user(user, detail)
+                    for user, detail in deferred:
+                        self._defer_untested_user(user, detail, failed.deferred_alone)
                     failed_emails = {user.email for user in failed}
                     if self._sync_retries:
-                        rejected = {user.email for user, _ in isolated}
+                        kept = {user.email for user, _ in (*isolated, *deferred)}
                         for item in claimed:
-                            if item.user.email not in failed_emails and item.user.email not in rejected:
+                            if item.user.email not in failed_emails and item.user.email not in kept:
                                 self._sync_retries.pop(item.user.email, None)
                     async with asyncio.timeout(self._internal_timeout):
                         await self._ack_claimed_users(

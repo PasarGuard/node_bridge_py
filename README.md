@@ -140,7 +140,11 @@ and storage errors retry with exponential backoff up to 30 seconds.
 
 A node fails the whole batch when it cannot apply one user in it. Such a rejected
 batch is split until the rejected users are alone, so everyone else is still
-delivered. The rejected users leave the queue and are queued again after a
+delivered. A round makes at most 16 sends for this and starts none that could
+outlast the round; users not tested by then go back to the queue at once (to be
+sent one by one if the round found as many rejected users as accepted ones).
+Users the node rejected before are retried as one batch, then one by one if it
+is rejected again. The rejected users leave the queue and are queued again after a
 backoff, so they never hold back later updates: 2 seconds doubling to 60
 seconds; after about 10 minutes an add is retried every 5 minutes (a removal
 stays at 60 seconds) and one error is logged for that user. Nothing is dropped.

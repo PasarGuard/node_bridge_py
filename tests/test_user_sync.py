@@ -551,6 +551,101 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sends, [list("abcd"), list("ab"), list("abcd")])
         self.assertEqual(node._sync_retries, {})
 
+    def count_rounds(self, node, sends):
+        """Record the number of sends each worker round makes."""
+        rounds = []
+        deliver = node._deliver_claimed_users
+
+        async def counted(claimed):
+            start = len(sends)
+            try:
+                return await deliver(claimed)
+            finally:
+                rounds.append(len(sends) - start)
+
+        node._deliver_claimed_users = counted
+        return rounds
+
+    def rejected_alone(self, node, emails):
+        return all(email in node._sync_retries and node._sync_retries[email].attempts for email in emails)
+
+    async def test_isolating_an_all_rejected_claim_is_bounded_per_round(self):
+        # Every user with an inbound the node's core cannot manage is rejected (the SS2022 case).
+        node = self.node()
+        sends = self.refuse(node, lambda user: "ss" in user.inbounds)
+        rounds = self.count_rounds(node, sends)
+        emails = [str(i) for i in range(100)]
+        await node.update_users([User(email=email, inbounds=["ss"]) for email in emails])
+        await node.connect("0.2.0", "1.0.0")
+        await eventually(lambda: self.rejected_alone(node, emails))
+        # Splitting 100 rejected users down to single users took 199 sends in one round. Now the first
+        # round splits with 16 sends (6 users isolated); the other 94 are sent as one batch and then
+        # one by one, at most 16 sends per round: 117 sends in all.
+        self.assertEqual(rounds, [16] * 7 + [5])
+        self.assertEqual(len(sends), 117)
+        self.assertEqual(node._user_sync_failure_count, 0)
+        self.assertEqual(node.delivered, [])
+
+    async def test_rejected_again_users_are_sent_one_by_one(self):
+        node = self.node()
+        self.fast_retries(node)
+        sends = self.refuse(node, lambda user: "ss" in user.inbounds)
+        emails = [str(i) for i in range(8)]
+        for email in emails:
+            node._hold_rejected_user(User(email=email, inbounds=["ss"]), "refused")
+            node._sync_retries[email].next_attempt = 0
+        await node.connect("0.2.0", "1.0.0")
+        await eventually(lambda: all(node._sync_retries[email].attempts == 2 for email in emails))
+        # One send for the batch, then one per user instead of 15 sends to split 8 users.
+        self.assertEqual(sends[:9], [emails] + [[email] for email in emails])
+
+    async def test_users_left_untested_in_a_round_are_delivered_in_the_next_ones(self):
+        node = self.node()
+        bad = {"5", "30", "55", "80"}
+        sends = self.refuse(node, lambda user: user.email in bad)
+        rounds = self.count_rounds(node, sends)
+        with self.assertLogs("sync-test", logging.WARNING) as logs:
+            await node.update_users([User(email=str(i), inbounds=["vless"]) for i in range(100)])
+            await node.connect("0.2.0", "1.0.0")
+            await eventually(lambda: len(node.delivered) == 96 and set(node._sync_retries) == bad)
+            await eventually(lambda: self.rejected_alone(node, bad))
+        self.assertLessEqual(max(rounds), 16, rounds)
+        self.assertGreater(len(rounds), 1)
+        self.assertEqual(sorted(user.email for user in node.delivered), sorted(set(map(str, range(100))) - bad))
+        # Users left for a later round are not reported as rejected.
+        self.assertEqual(len([line for line in logs.output if "Node rejected user" in line]), 4)
+        self.assertEqual(node._user_sync_failure_count, 0)
+
+    async def test_users_deferred_untested_go_before_retries(self):
+        store = InMemoryUserSyncStore()
+        node = self.node(store)
+        node._hold_rejected_user(User(email="a", inbounds=["ss"]), "refused")
+        node._sync_retries["a"].next_attempt = 0
+        node._defer_untested_user(User(email="b", inbounds=["vless"]), "refused", alone=True)
+        await node._queue_due_rejected_users()
+        claimed = await store.claim_users("node", "other", 10, 30)
+        self.assertEqual([item.user.email for item in claimed], ["b", "a"])
+
+    async def test_slow_isolation_stops_before_the_round_runs_out(self):
+        # 0.75 s per round; each send takes 0.02 s and may take up to 0.3 s.
+        node = self.node(sync_lease_seconds=1.0)
+        node._internal_timeout = 0.3
+        node._sync_isolation_calls = 1000
+        self.refuse(node, lambda user: "ss" in user.inbounds)
+        refusing = node.sync_users_chunked
+
+        async def slow(users, **kwargs):
+            await asyncio.sleep(0.02)
+            return await refusing(users, **kwargs)
+
+        node.sync_users_chunked = slow
+        emails = [str(i) for i in range(30)]
+        await node.update_users([User(email=email, inbounds=["ss"]) for email in emails])
+        await node.connect("0.2.0", "1.0.0")
+        # Splitting 30 rejected users takes 59 sends (1.2 s): the round would time out and isolate no one.
+        await eventually(lambda: self.rejected_alone(node, emails))
+        self.assertEqual(node._user_sync_failure_count, 0)
+
     async def test_disconnect_during_delivery_requeues_owned_claim(self):
         store = InMemoryUserSyncStore()
         node = self.node(store)
