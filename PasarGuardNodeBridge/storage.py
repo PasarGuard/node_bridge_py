@@ -115,7 +115,8 @@ class NodeLifecycleCoordinatorProtocol(Protocol):
     ) -> LifecycleLease | None: ...
 
     async def release(self, lease: LifecycleLease, state_update: NodeLifecycleState | None = None) -> None: ...
-    async def heartbeat(self, lease: LifecycleLease) -> None: ...
+    # True: renewed. False: the lease is no longer held by this token. None: not reported.
+    async def heartbeat(self, lease: LifecycleLease) -> bool | None: ...
     async def get_state(self, node_id: str) -> NodeLifecycleState | None: ...
 
     async def update_observed(
@@ -163,6 +164,17 @@ class InMemoryUserSyncStore:
             for user in users:
                 self._revision += 1
                 pending[user.email] = (User.FromString(user.SerializeToString()), self._revision)
+
+    async def enqueue_users_if_absent(self, node_id: str, users: list[User]) -> None:
+        """Queue users that have nothing queued; a queued (newer or leased) entry is kept."""
+        if not users:
+            return
+        async with self._lock:
+            pending = self._pending.setdefault(node_id, {})
+            for user in users:
+                if user.email not in pending:
+                    self._revision += 1
+                    pending[user.email] = (User.FromString(user.SerializeToString()), self._revision)
 
     def _expire_claims(self, node_id: str) -> None:
         claimed = self._claimed.setdefault(node_id, {})
@@ -340,12 +352,14 @@ class InMemoryNodeLifecycleCoordinator:
             state.updated_at = now
             self._states[lease.node_id] = state
 
-    async def heartbeat(self, lease: LifecycleLease) -> None:
+    async def heartbeat(self, lease: LifecycleLease) -> bool:
         now = time.monotonic()
         async with self._lock:
             current = self._leases.get(lease.node_id)
-            if current is not None and current[0].token == lease.token:
-                self._leases[lease.node_id] = (lease, now + lease.lease_seconds)
+            if current is None or current[0].token != lease.token:
+                return False
+            self._leases[lease.node_id] = (lease, now + lease.lease_seconds)
+            return True
 
     async def get_state(self, node_id: str) -> NodeLifecycleState | None:
         async with self._lock:
