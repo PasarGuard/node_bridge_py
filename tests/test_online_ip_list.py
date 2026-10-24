@@ -8,6 +8,7 @@ from grpclib.const import Cardinality, Handler, Status
 from grpclib.exceptions import GRPCError
 from grpclib.server import Server
 
+from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.aiohttp_compat import LazyClientSession, make_timeout
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
@@ -166,6 +167,16 @@ class OnlineIpListTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx.exception.code, 500)
         finally:
             await self.close_rest(runner, node)
+
+
+class BaseClassDefaultTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bulk_method_is_not_abstract_so_existing_subclasses_still_instantiate(self):
+        self.assertNotIn("get_users_online_ip_list", PasarGuardNode.__abstractmethods__)
+
+    async def test_bulk_method_default_reports_it_is_not_implemented(self):
+        with self.assertRaises(NodeAPIError) as ctx:
+            await PasarGuardNode.get_users_online_ip_list(object())
+        self.assertEqual(ctx.exception.code, 501)
 
 
 if __name__ == "__main__":
