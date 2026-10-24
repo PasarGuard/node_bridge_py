@@ -55,6 +55,10 @@ class NodeServiceBase(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def GetUsersOnlineIpListStats(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.Empty, PasarGuardNodeBridge.common.service_pb2.StatsAllOnlineIpListResponse]') -> None:
+        pass
+
+    @abc.abstractmethod
     async def SyncUser(self, stream: 'grpclib.server.Stream[PasarGuardNodeBridge.common.service_pb2.User, PasarGuardNodeBridge.common.service_pb2.Empty]') -> None:
         pass
 
@@ -151,6 +155,12 @@ class NodeServiceBase(abc.ABC):
                 grpclib.const.Cardinality.UNARY_UNARY,
                 PasarGuardNodeBridge.common.service_pb2.StatRequest,
                 PasarGuardNodeBridge.common.service_pb2.StatsOnlineIpListResponse,
+            ),
+            '/service.NodeService/GetUsersOnlineIpListStats': grpclib.const.Handler(
+                self.GetUsersOnlineIpListStats,
+                grpclib.const.Cardinality.UNARY_UNARY,
+                PasarGuardNodeBridge.common.service_pb2.Empty,
+                PasarGuardNodeBridge.common.service_pb2.StatsAllOnlineIpListResponse,
             ),
             '/service.NodeService/SyncUser': grpclib.const.Handler(
                 self.SyncUser,
@@ -271,6 +281,12 @@ class NodeServiceStub:
             '/service.NodeService/GetUserOnlineIpListStats',
             PasarGuardNodeBridge.common.service_pb2.StatRequest,
             PasarGuardNodeBridge.common.service_pb2.StatsOnlineIpListResponse,
+        )
+        self.GetUsersOnlineIpListStats = grpclib.client.UnaryUnaryMethod(
+            channel,
+            '/service.NodeService/GetUsersOnlineIpListStats',
+            PasarGuardNodeBridge.common.service_pb2.Empty,
+            PasarGuardNodeBridge.common.service_pb2.StatsAllOnlineIpListResponse,
         )
         self.SyncUser = grpclib.client.StreamUnaryMethod(
             channel,

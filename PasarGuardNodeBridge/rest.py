@@ -305,6 +305,15 @@ class Node(PasarGuardNode):
             proto_response_class=service.StatsOnlineIpListResponse,
         )
 
+    async def get_users_online_ip_list(self, timeout: int | None = None) -> service.StatsAllOnlineIpListResponse | None:
+        timeout = timeout or self._default_timeout
+        return await self._make_request(
+            method="GET",
+            endpoint="stats/users/online_ip",
+            timeout=timeout,
+            proto_response_class=service.StatsAllOnlineIpListResponse,
+        )
+
     async def sync_users(
         self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
     ) -> service.Empty | None:

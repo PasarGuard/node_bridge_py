@@ -55,6 +55,10 @@ class PasarGuardNode(Controller, ABC):
     ) -> service.StatsOnlineIpListResponse | None:
         raise NotImplementedError
 
+    async def get_users_online_ip_list(self, timeout: int | None = None) -> service.StatsAllOnlineIpListResponse | None:
+        # Not abstract: subclasses written for an earlier release keep working and only fail when this is called
+        raise NodeAPIError(501, "get_users_online_ip_list is not implemented by this node class")
+
     @abstractmethod
     async def sync_users(
         self, users: list[service.User], flush_pending: bool = False, timeout: int | None = None
