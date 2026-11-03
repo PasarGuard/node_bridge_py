@@ -415,11 +415,32 @@ class Controller:
         node_version = await self.node_version()
         return self._is_version_at_least(node_version, "0.2.0"), node_version
 
-    async def _heartbeat_lifecycle_lease(self, lease: LifecycleLease) -> None:
-        interval = max(self._lifecycle_lease_seconds / 3, 0.01)
+    async def _lifecycle_lease_still_held(self, lease: LifecycleLease, valid_until: float) -> bool:
+        if asyncio.get_running_loop().time() >= valid_until:
+            return False
         try:
-            while True:
+            state = await self._lifecycle_coordinator.get_state(lease.node_id)
+        except Exception as e:
+            self.logger.warning(
+                f"[{self.name}] Lifecycle lease state read failed | Error: {type(e).__name__} - {e!s}"
+            )
+            return True
+        return (
+            state is not None
+            and state.epoch == lease.epoch
+            and state.owner == lease.worker_id
+            and state.operation == lease.operation
+        )
+
+    async def _heartbeat_lifecycle_lease(self, lease: LifecycleLease, acquired_at: float) -> None:
+        interval = max(self._lifecycle_lease_seconds / 3, 0.01)
+        loop = asyncio.get_running_loop()
+        renewal = asyncio.current_task()
+        valid_until = acquired_at + lease.lease_seconds
+        try:
+            while not renewal.cancelling():
                 await asyncio.sleep(interval)
+                sent_at = loop.time()
                 try:
                     renewed = await self._lifecycle_coordinator.heartbeat(lease)
                 except Exception as e:
@@ -430,18 +451,29 @@ class Controller:
                     )
                     continue
                 if renewed is False:  # coordinators that report it: the lease is gone, stop renewing
+                    if await self._lifecycle_lease_still_held(lease, valid_until):
+                        self.logger.warning(
+                            f"[{self.name}] Lifecycle lease for {lease.operation} was not renewed but is still "
+                            "held; renewing again"
+                        )
+                        continue
                     self.logger.warning(f"[{self.name}] Lifecycle lease for {lease.operation} was lost")
                     return
+                if renewed is True:
+                    valid_until = sent_at + lease.lease_seconds
         except asyncio.CancelledError:
             pass
 
     async def _acquire_lifecycle_lease(self, operation: LifecycleOperation) -> LifecycleLease:
+        requested_at = asyncio.get_running_loop().time()
         lease = await self._lifecycle_coordinator.try_acquire(
             self.node_id, self.worker_id, operation, self._lifecycle_lease_seconds
         )
         if lease is None:
             raise NodeAPIError(409, f"Node lifecycle operation already in progress for {self.node_id}")
-        self._lifecycle_heartbeat_tasks[lease.token] = asyncio.create_task(self._heartbeat_lifecycle_lease(lease))
+        self._lifecycle_heartbeat_tasks[lease.token] = asyncio.create_task(
+            self._heartbeat_lifecycle_lease(lease, requested_at)
+        )
         return lease
 
     async def _release_lifecycle_lease(
