@@ -13,6 +13,7 @@ from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
+from PasarGuardNodeBridge.log_stream import deliver_stream_error
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
 
@@ -548,6 +549,7 @@ class Node(PasarGuardNode):
         """
         log_queue: asyncio.Queue[str | NodeAPIError] = asyncio.Queue(maxsize=max_queue_size)
         stream_task = None
+        leaving = asyncio.Event()
 
         async def _receive_logs(stream: Stream[service.Empty, service.Log]):
             """Receive log messages and put them in the queue."""
@@ -566,25 +568,32 @@ class Node(PasarGuardNode):
                             await log_queue.put(log.detail)
                         except (asyncio.QueueEmpty, asyncio.QueueFull):
                             pass
+                await stream.recv_trailing_metadata()
+                ending = NodeAPIError(-1, "Log stream ended by the node")
             except asyncio.CancelledError:
                 self.logger.debug(f"[{self.name}] Log stream receive task cancelled")
                 raise
             except StreamTerminatedError as e:
-                # Stream was cancelled intentionally, this is expected during cleanup
-                self.logger.debug(f"[{self.name}] Log stream terminated: {e!s}")
+                if leaving.is_set():
+                    # Stream was cancelled intentionally, this is expected during cleanup
+                    self.logger.debug(f"[{self.name}] Log stream terminated: {e!s}")
+                    return
+                ending = NodeAPIError(-1, f"Log stream terminated: {e!s}")
             except Exception as e:
-                error_type = type(e).__name__
-                self.logger.error(f"[{self.name}] Error receiving logs | Error: {error_type} - {e!s}")
+                if leaving.is_set():
+                    self.logger.debug(f"[{self.name}] Log stream closed | Error: {type(e).__name__} - {e!s}")
+                    return
                 # Convert exception to NodeAPIError and put directly into log queue
                 # so user gets immediate notification when reading
                 try:
                     self._handle_error(e)
                 except NodeAPIError as api_error:
-                    try:
-                        # Put error into log queue for immediate detection
-                        log_queue.put_nowait(api_error)
-                    except asyncio.QueueFull:
-                        pass
+                    ending = api_error
+            if leaving.is_set():
+                return
+            self.logger.warning(f"[{self.name}] Log stream ended | {ending.detail} (code {ending.code})")
+            # Put error into log queue for immediate detection
+            deliver_stream_error(log_queue, ending)
 
         try:
             self.logger.debug(f"[{self.name}] Opening on-demand log stream")
@@ -605,6 +614,7 @@ class Node(PasarGuardNode):
                         if exc and not isinstance(exc, asyncio.CancelledError):
                             self._handle_error(exc)
                 finally:
+                    leaving.set()
                     # Cleanup: cancel the gRPC stream to unblock recv_message()
                     try:
                         await stream.cancel()
