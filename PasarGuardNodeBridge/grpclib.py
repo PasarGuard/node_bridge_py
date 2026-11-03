@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -313,9 +314,14 @@ class Node(PasarGuardNode):
         if flush_pending:
             await self.flush_pending_users()
 
+        chunk_count = max(1, math.ceil(len(users) / chunk_size))
+        budget = timeout + self._internal_timeout * (chunk_count + 2)
         async with self._node_lock:
             try:
-                async with self._client.SyncUsersChunked.open(metadata=self._metadata) as stream:
+                async with (
+                    asyncio.timeout(budget),
+                    self._client.SyncUsersChunked.open(metadata=self._metadata) as stream,
+                ):
                     if not users:
                         await asyncio.wait_for(
                             stream.send_message(service.UsersChunk(index=0, last=True)),
@@ -331,7 +337,7 @@ class Node(PasarGuardNode):
                                 timeout=self._internal_timeout,
                             )
 
-                    await stream.end()
+                    await asyncio.wait_for(stream.end(), timeout=self._internal_timeout)
                     await asyncio.wait_for(stream.recv_message(), timeout=timeout)
                     return []
             except Exception as e:
@@ -434,8 +440,9 @@ class Node(PasarGuardNode):
     async def _sync_batch_users(self, users: list[service.User]) -> list[service.User]:
         """Sync users via gRPC SyncUser stream. Returns failed users."""
         failed = []
+        budget = self._internal_timeout * (len(users) + 2)
         try:
-            async with self._client.SyncUser.open(metadata=self._metadata) as stream:
+            async with asyncio.timeout(budget), self._client.SyncUser.open(metadata=self._metadata) as stream:
                 for user in users:
                     try:
                         await asyncio.wait_for(stream.send_message(user), timeout=self._internal_timeout)
@@ -445,7 +452,7 @@ class Node(PasarGuardNode):
                             f"[{self.name}] Failed to sync user {user.email} | Error: {error_type} - {e!s}"
                         )
                         failed.append(user)
-                await stream.end()
+                await asyncio.wait_for(stream.end(), timeout=self._internal_timeout)
         except Exception as e:
             # Stream-level failure - all users failed
             error_type = type(e).__name__
