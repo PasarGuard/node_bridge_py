@@ -337,7 +337,7 @@ class Node(PasarGuardNode):
                                 timeout=self._internal_timeout,
                             )
 
-                    await asyncio.wait_for(stream.end(), timeout=self._internal_timeout)
+                    await stream.end()
                     await asyncio.wait_for(stream.recv_message(), timeout=timeout)
                     return []
             except Exception as e:
@@ -452,7 +452,7 @@ class Node(PasarGuardNode):
                             f"[{self.name}] Failed to sync user {user.email} | Error: {error_type} - {e!s}"
                         )
                         failed.append(user)
-                await asyncio.wait_for(stream.end(), timeout=self._internal_timeout)
+                await stream.end()
         except Exception as e:
             # Stream-level failure - all users failed
             error_type = type(e).__name__
