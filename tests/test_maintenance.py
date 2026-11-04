@@ -39,6 +39,7 @@ class LostLeaseCoordinator(InMemoryNodeLifecycleCoordinator):
 
     async def heartbeat(self, lease):
         self.heartbeats += 1
+        await self.release(lease)
         return False
 
 
