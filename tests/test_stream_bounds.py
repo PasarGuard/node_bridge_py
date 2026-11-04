@@ -2,8 +2,10 @@ import asyncio
 import logging
 import time
 import unittest
+from dataclasses import dataclass
 from unittest.mock import patch
 
+from grpclib import protocol
 from grpclib.client import Channel
 from grpclib.const import Cardinality, Handler
 from grpclib.server import Server
@@ -24,6 +26,20 @@ LARGEST_WINDOW = 2**31 - 1
 DEFAULT_WINDOW = 65535
 LARGE_INBOUND = "x" * (15 * 1024 * 1024)
 EMPTY_GRPC_MESSAGE = b"\x00\x00\x00\x00\x00"
+
+
+@dataclass
+class EndCall:
+    ready_on_entry: bool
+    started: float
+    outcome: str = "pending"
+    ready_on_exit: bool | None = None
+    pending_for: float | None = None
+
+    def close(self, outcome: str, stream: protocol.Stream):
+        self.outcome = outcome
+        self.ready_on_exit = stream.connection.write_ready.is_set()
+        self.pending_for = time.monotonic() - self.started
 
 
 class NodeThatNeverFinishes:
@@ -110,6 +126,23 @@ class PeerThatStopsReading:
 
 
 class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.end_calls = []
+        real_end = protocol.Stream.end
+        end_calls = self.end_calls
+
+        async def watched_end(stream: protocol.Stream):
+            call = EndCall(ready_on_entry=stream.connection.write_ready.is_set(), started=time.monotonic())
+            end_calls.append(call)
+            try:
+                await real_end(stream)
+            except asyncio.CancelledError:
+                call.close("cancelled", stream)
+                raise
+            call.close("returned", stream)
+
+        self.enterContext(patch.object(protocol.Stream, "end", watched_end))
+
     def connect_node(self, port: int) -> GrpcNode:
         with patch("ssl.SSLContext.load_verify_locations"):
             node = GrpcNode(
@@ -163,6 +196,27 @@ class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
     def assert_all_failed(self, result, users):
         self.assertEqual([user.email for user in result], [user.email for user in users])
 
+    def only_end_call(self) -> EndCall:
+        self.assertEqual(len(self.end_calls), 1)
+        return self.end_calls[0]
+
+    def assert_end_returned_at_once(self):
+        call = self.only_end_call()
+        self.assertTrue(call.ready_on_entry)
+        self.assertEqual(call.outcome, "returned")
+
+    def assert_end_stayed_blocked_on_flow_control(self):
+        call = self.only_end_call()
+        self.assertFalse(call.ready_on_entry)
+        self.assertEqual(call.outcome, "cancelled")
+        self.assertFalse(call.ready_on_exit)
+
+    def assert_end_waited_on_flow_control_longer_than_one_internal_timeout(self):
+        call = self.only_end_call()
+        self.assertFalse(call.ready_on_entry)
+        self.assertEqual(call.outcome, "returned")
+        self.assertGreater(call.pending_for, STEP_TIMEOUT)
+
     async def test_a_chunked_sync_returns_when_the_node_never_sends_trailers(self):
         node = await self.start_node_that_never_finishes(sends_reply=True)
         users = [service.User(email=str(index)) for index in range(3)]
@@ -171,6 +225,7 @@ class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.rejected)
         self.assertFalse(node._node_lock.locked())
         self.assertLess(elapsed, STEP_TIMEOUT * 6)
+        self.assert_end_returned_at_once()
 
     async def test_a_per_user_sync_returns_when_the_node_never_answers(self):
         node = await self.start_node_that_never_finishes(sends_reply=False)
@@ -178,6 +233,7 @@ class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
         result, elapsed = await self.run_guarded(node._sync_batch_users, users)
         self.assert_all_failed(result, users)
         self.assertLess(elapsed, STEP_TIMEOUT * 6)
+        self.assert_end_returned_at_once()
 
     async def test_a_chunked_sync_returns_when_the_peer_stops_reading_during_end(self):
         node = await self.start_peer_that_stops_reading(resume_after=None)
@@ -187,6 +243,7 @@ class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.rejected)
         self.assertFalse(node._node_lock.locked())
         self.assertLess(elapsed, STEP_TIMEOUT * 6)
+        self.assert_end_stayed_blocked_on_flow_control()
 
     async def test_a_per_user_sync_returns_when_the_peer_stops_reading_during_end(self):
         node = await self.start_peer_that_stops_reading(resume_after=None)
@@ -194,6 +251,7 @@ class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
         result, elapsed = await self.run_guarded(node._sync_batch_users, users)
         self.assert_all_failed(result, users)
         self.assertLess(elapsed, STEP_TIMEOUT * 6)
+        self.assert_end_stayed_blocked_on_flow_control()
 
     async def test_a_chunked_sync_survives_a_pause_in_end_longer_than_one_internal_timeout(self):
         node = await self.start_peer_that_stops_reading(resume_after=STEP_TIMEOUT * 1.5)
@@ -201,12 +259,14 @@ class StreamBoundTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self.run_guarded(lambda batch: node.sync_users_chunked(batch, chunk_size=1), users)
         self.assertEqual([user.email for user in result], [])
         self.assertFalse(node._node_lock.locked())
+        self.assert_end_waited_on_flow_control_longer_than_one_internal_timeout()
 
     async def test_a_per_user_sync_survives_a_pause_in_end_longer_than_one_internal_timeout(self):
         node = await self.start_peer_that_stops_reading(resume_after=STEP_TIMEOUT * 1.5)
         users = [service.User(email="large", inbounds=[LARGE_INBOUND])]
         result, _ = await self.run_guarded(node._sync_batch_users, users)
         self.assertEqual([user.email for user in result], [])
+        self.assert_end_waited_on_flow_control_longer_than_one_internal_timeout()
 
 
 if __name__ == "__main__":
