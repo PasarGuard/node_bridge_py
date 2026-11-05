@@ -54,6 +54,8 @@ def create_node(
     port: int,
     server_ca: str,
     api_key: str,
+    api_port: int,
+    max_message_size: int | None = None,
     **kwargs,
 ) -> PasarGuardNode:
     """
@@ -68,6 +70,8 @@ def create_node(
         port (int): Port number used to connect to the node.
         server_ca (str): The server's SSL certificate as a string (PEM format).
         api_key (str): API key used for authentication with the node.
+        api_port (int): Port serving the node's JSON service API. For `NodeType.grpc` this is a
+            separate port from `port`, which carries gRPC traffic only.
         **kwargs: Additional optional arguments:
             - name (str): Node instance name for logging. Defaults to "default".
             - extra (dict): Optional dictionary to pass custom metadata or configuration. Defaults to {}.
@@ -76,6 +80,7 @@ def create_node(
             - internal_timeout (int): Default timeout in seconds for internal operations. Defaults to 15.
             - proxy (str): Optional upstream proxy URL. Supports socks4, socks4a, socks5, socks5h,
               http, and https URL forms with or without credentials.
+            - max_message_size (int): Maximum gRPC message size in bytes. `NodeType.grpc` only.
 
     Returns:
         PasarGuardNode: An initialized node instance ready for API operations.
@@ -90,6 +95,7 @@ def create_node(
         ...     connection=NodeType.grpc,
         ...     address="172.27.158.135",
         ...     port=2096,
+        ...     api_port=2097,
         ...     server_ca=server_ca_content,
         ...     api_key=api_key,
         ... )
@@ -99,6 +105,7 @@ def create_node(
         ...     connection=NodeType.grpc,
         ...     address="172.27.158.135",
         ...     port=2096,
+        ...     api_port=2097,
         ...     server_ca=server_ca_content,
         ...     api_key=api_key,
         ...     default_timeout=30,
@@ -117,8 +124,10 @@ def create_node(
         return GrpcNode(
             address=address,
             port=port,
+            api_port=api_port,
             server_ca=server_ca,
             api_key=api_key,
+            max_message_size=max_message_size,
             **kwargs,
         )
 
@@ -126,6 +135,7 @@ def create_node(
         return RestNode(
             address=address,
             port=port,
+            api_port=api_port,
             server_ca=server_ca,
             api_key=api_key,
             **kwargs,
