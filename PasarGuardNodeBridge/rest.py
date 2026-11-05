@@ -1,10 +1,13 @@
+import ast
 import asyncio
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TypeVar, overload
 
 import aiohttp
+from aiohttp.http_exceptions import BadStatusLine, HttpProcessingError
 from google.protobuf.message import DecodeError, Message
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
@@ -15,6 +18,37 @@ from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url
 
 ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
+
+# aiohttp's C parser quotes the bytes it could not parse as a Python bytes literal
+_QUOTED_BYTES = re.compile(r"b'(?:[^'\\\n]|\\.)*'|b\"(?:[^\"\\\n]|\\.)*\"")
+
+
+def _describe_non_http11_answer(error: aiohttp.ClientResponseError) -> str | None:
+    """Describe an answer without an HTTP/1.x status line, or return None for any other error."""
+    parse_error = error.__cause__
+    bad_status_line = getattr(parse_error, "__cause__", None)
+    if not isinstance(parse_error, HttpProcessingError) or not isinstance(bad_status_line, BadStatusLine):
+        return None
+    # The pure-Python parser keeps the status line in .line, the C parser quotes the bytes in the message
+    received = (bad_status_line.line or "").encode(errors="replace")
+    if not received and (match := _QUOTED_BYTES.search(bad_status_line.message or "")):
+        try:
+            received = ast.literal_eval(match.group())
+        except (SyntaxError, ValueError):
+            received = b""
+
+    if received.startswith((b"HTTP/2", b"HTTP/3", b"PRI * HTTP/2.0")) or (len(received) >= 9 and received[3] in (4, 7)):
+        got = "HTTP/2"  # a status line, the client preface, or a SETTINGS/GOAWAY frame
+    elif received[:1] in (b"\x15", b"\x16") and received[1:2] == b"\x03":
+        got = "TLS data"
+    elif received:
+        got = repr(received[:32])
+    else:
+        got = "an unparsable response"
+    return (
+        f"Node did not answer with HTTP/1.1 (got {got}); the REST API needs HTTP/1.1, "
+        "check the reverse proxy and TLS settings"
+    )
 
 
 class Node(PasarGuardNode):
@@ -96,6 +130,9 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-2, detail=f"Network error: {error}")
         elif isinstance(error, BufferedStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
+        elif isinstance(error, aiohttp.ClientResponseError) and (detail := _describe_non_http11_answer(error)):
+            # aiohttp reports an answer it cannot parse as status 400, but the node never sent a status
+            raise NodeAPIError(code=-2, detail=f"Protocol error: {detail}")
         elif isinstance(error, aiohttp.ClientResponseError):
             raise NodeAPIError(code=error.status, detail=f"HTTP error: {error.message}")
         else:
