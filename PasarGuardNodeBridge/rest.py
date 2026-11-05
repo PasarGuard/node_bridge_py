@@ -11,6 +11,7 @@ from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientSession, buffer_response, make_timeout
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
+from PasarGuardNodeBridge.log_stream import deliver_stream_error
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
 from PasarGuardNodeBridge.utils import format_host_for_url
 
@@ -603,6 +604,7 @@ class Node(PasarGuardNode):
         """
         log_queue: asyncio.Queue[str | NodeAPIError] = asyncio.Queue(maxsize=max_queue_size)
         stream_task: asyncio.Task[None] | None = None
+        leaving = asyncio.Event()
 
         async def _receive_logs(response: aiohttp.ClientResponse) -> None:
             """Receive log messages from HTTP stream and put them in the queue."""
@@ -625,25 +627,31 @@ class Node(PasarGuardNode):
                                     await log_queue.put(line)
                                 except (asyncio.QueueEmpty, asyncio.QueueFull):
                                     pass
+                ending = NodeAPIError(-1, "Log stream ended by the node")
             except asyncio.CancelledError:
                 self.logger.debug(f"[{self.name}] Log stream receive task cancelled")
                 raise
-            except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as e:
-                # Stream was closed intentionally, this is expected during cleanup
-                self.logger.debug(f"[{self.name}] Log stream closed: {type(e).__name__}")
+            except (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError) as e:
+                if leaving.is_set():
+                    # Stream was closed intentionally, this is expected during cleanup
+                    self.logger.debug(f"[{self.name}] Log stream closed: {type(e).__name__}")
+                    return
+                ending = NodeAPIError(-1, f"Log stream closed: {type(e).__name__} - {e!s}")
             except Exception as e:
-                error_type = type(e).__name__
-                self.logger.error(f"[{self.name}] Error receiving logs | Error: {error_type} - {e!s}")
+                if leaving.is_set():
+                    self.logger.debug(f"[{self.name}] Log stream closed | Error: {type(e).__name__} - {e!s}")
+                    return
                 # Convert exception to NodeAPIError and put directly into log queue
                 # so user gets immediate notification when reading
                 try:
                     self._handle_error(e)
                 except NodeAPIError as api_error:
-                    try:
-                        # Put error into log queue for immediate detection
-                        log_queue.put_nowait(api_error)
-                    except asyncio.QueueFull:
-                        pass
+                    ending = api_error
+            if leaving.is_set():
+                return
+            self.logger.warning(f"[{self.name}] Log stream ended | {ending.detail} (code {ending.code})")
+            # Put error into log queue for immediate detection
+            deliver_stream_error(log_queue, ending)
 
         response = None
         try:
@@ -667,6 +675,7 @@ class Node(PasarGuardNode):
                     if exc and not isinstance(exc, asyncio.CancelledError):
                         self._handle_error(exc)
             finally:
+                leaving.set()
                 # Cleanup: Close HTTP stream first to interrupt the content iterator.
                 if response is not None:
                     try:
