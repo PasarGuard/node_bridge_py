@@ -8,7 +8,7 @@ This package provides:
 - User sync helpers (single, batch, and chunked streaming)
 - Health/version helpers
 - On-demand log streaming
-- Node maintenance endpoints (update core/node/geofiles)
+- Node maintenance endpoints (update core/node/geofiles and hard reset)
 
 ## Installation
 
@@ -292,7 +292,7 @@ behavior. Their explicit `flush_pending=True` option clears queued work before
 sending; use `sync_users_from_source()` when pending updates must survive a failed
 full sync. `flush_pending_users()` remains an explicit queue discard operation.
 
-Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, and `update_geofiles()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
+Lifecycle operations are coordinated through the same model. The default process-local coordinator prevents concurrent `start()`, `stop()`, `update_node()`, `update_core()`, `update_geofiles()`, and `hard_reset()` calls from controllers for the same node in one process. Pass a shared `lifecycle_coordinator` in multi-process or multi-host deployments so only one worker can perform a lifecycle operation at a time. Read-only status cron jobs can call stats/info normally; if they write shared observed status, use the current lifecycle epoch so stale cron results cannot overwrite a newer reconnect result.
 
 While an operation runs, the controller renews its lease by calling the coordinator's `heartbeat(lease)` every third of `lifecycle_lease_seconds`. Return `True` when the lease was renewed and `False` when this lease is no longer held (released, or expired and taken by another worker); the controller then stops renewing. An exception from `heartbeat` is logged and the next renewal is tried as usual.
 
@@ -409,13 +409,28 @@ async with node.stream_logs(max_queue_size=200) as log_queue:
 
 ### 7. Maintenance Endpoints
 
-These methods use the node REST JSON API (`api_port`).
+These methods use the node-serviced REST JSON API (`api_port`) for both gRPC and
+REST clients. Requests include the configured `x-api-key` and return a buffered
+response; read the response body with `response.json()`.
 
 ```python
+reachable = await node.check_connectivity()
 await node.update_node()
-await node.update_core({"version": "latest"})
-await node.update_geofiles({"remove_temp": True})
+await node.update_core({"core_version": "latest"})
+await node.update_core({"core_version": "v26.10.17"})
+await node.update_geofiles({"region": "iran"})
+await node.hard_reset()
 ```
+
+Core versions accept `latest`, `vX.Y.Z`, or `X.Y.Z`. Geofile regions accept `iran`,
+`russia`, or `china` (case-insensitive).
+
+`hard_reset()` runs `pg-node restart` on the server and disconnects the local
+client after success. Call `start(...)` again to initialize the backend.
+Maintenance calls use dedicated timeouts (330 seconds for updates, 90 seconds
+for hard reset), independent of `default_timeout`. Errors raise `NodeAPIError`
+with the server's status code and detail; an unreachable management API raises
+code `503`, and a conflicting lifecycle operation raises code `409`.
 
 ### 8. Routing APIs
 
@@ -492,9 +507,11 @@ Xray-only (gRPC and REST); on a non-xray backend these raise `NodeAPIError(501)`
 
 ### Maintenance
 
+- `check_connectivity()` → `bool`
 - `update_node()`
 - `update_core(json)`
 - `update_geofiles(json)`
+- `hard_reset()`
 
 ## Error Handling
 
