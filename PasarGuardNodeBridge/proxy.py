@@ -1,11 +1,12 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from ssl import SSLContext
 from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
 
-from PasarGuardNodeBridge.tls import PinnedProxyConnector
+from PasarGuardNodeBridge.tls import PinnedProxyConnector, TLSPolicy
 
 SUPPORTED_PROXY_SCHEMES = {"http", "https", "socks4", "socks4a", "socks5", "socks5h"}
 GRPC_PROXY_SCHEMES = {"http", "socks4", "socks4a", "socks5", "socks5h"}
@@ -42,7 +43,7 @@ def parse_proxy_url(proxy: str | None) -> ProxyConfig | None:
         rdns = scheme in {"socks4a", "socks5h"}
         canonical_url = parsed._replace(scheme="socks4" if scheme.startswith("socks4") else "socks5").geturl()
 
-        def connector_factory(ssl_context, *, tls_policy=None) -> aiohttp.BaseConnector:
+        def connector_factory(ssl_context: SSLContext, *, tls_policy: TLSPolicy | None = None) -> aiohttp.BaseConnector:
             if tls_policy is not None and tls_policy.certificate_sha256:
                 return PinnedProxyConnector.from_url(canonical_url, ssl=ssl_context, tls_policy=tls_policy, rdns=rdns)
             return ProxyConnector.from_url(canonical_url, ssl=ssl_context, rdns=rdns)

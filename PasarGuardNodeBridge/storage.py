@@ -126,7 +126,7 @@ class NodeLifecycleCoordinatorProtocol(Protocol):
 
 
 class InMemoryNodeRegistry:
-    def __init__(self):
+    def __init__(self) -> None:
         self._nodes: dict[str, NodeConfig] = {}
         self._lock = asyncio.Lock()
 
@@ -148,7 +148,7 @@ class InMemoryNodeRegistry:
 
 
 class InMemoryUserSyncStore:
-    def __init__(self):
+    def __init__(self) -> None:
         # Keep the latest desired revision even while an older revision is leased.
         self._pending: dict[str, dict[str, tuple[User, int]]] = {}
         self._claimed: dict[str, dict[str, tuple[str, int, float]]] = {}
@@ -297,7 +297,7 @@ class InMemoryUserSyncStore:
 
 
 class InMemoryNodeLifecycleCoordinator:
-    def __init__(self):
+    def __init__(self) -> None:
         self._states: dict[str, NodeLifecycleState] = {}
         self._leases: dict[str, tuple[LifecycleLease, float]] = {}
         self._lock = asyncio.Lock()

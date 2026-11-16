@@ -2,7 +2,8 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import TypeVar, overload
+from types import TracebackType
+from typing import Any, NoReturn, Self, TypeVar, overload
 
 import aiohttp
 from google.protobuf.message import DecodeError, Message
@@ -27,15 +28,15 @@ class Node(PasarGuardNode):
         api_key: str,
         server_ca: str | None = None,
         name: str = "default",
-        extra: dict | None = None,
+        extra: dict[str, Any] | None = None,
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
         proxy: str | None = None,
         *,
         certificate_sha256: str | None = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(
@@ -66,10 +67,12 @@ class Node(PasarGuardNode):
 
         self._node_lock = asyncio.Lock()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
+    ) -> None:
         await self.stop()
         await self._client.close()
         await self._json_client.close()
@@ -87,7 +90,7 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-2, detail=f"Error deserialising protobuf: {e}")
         return proto_instance
 
-    def _handle_error(self, error: BaseException):
+    def _handle_error(self, error: BaseException) -> NoReturn:
         if isinstance(error, aiohttp.ClientConnectorCertificateError):
             raise NodeAPIError(code=-2, detail=verification_error_detail(error))
         elif isinstance(error, aiohttp.ServerDisconnectedError):
@@ -355,7 +358,7 @@ class Node(PasarGuardNode):
                     break
             return bytes(encoded)
 
-        async def _iter_chunks():
+        async def _iter_chunks() -> AsyncGenerator[bytes, None]:
             # Send a terminating empty chunk when no users are provided
             if not users:
                 chunk_bytes = self._serialize_protobuf(service.UsersChunk(index=0, last=True))
@@ -513,7 +516,7 @@ class Node(PasarGuardNode):
                 failed.append(user)
         return failed
 
-    async def _check_node_health(self):
+    async def _check_node_health(self) -> None:
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
         max_retries = 3

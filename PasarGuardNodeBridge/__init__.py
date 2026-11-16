@@ -20,6 +20,7 @@ __author__ = "PasarGuard"
 
 
 from enum import Enum
+from typing import Any
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
@@ -56,7 +57,7 @@ def create_node(
     server_ca: str | None = None,
     *,
     certificate_sha256: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> PasarGuardNode:
     """
     Create and initialize a PasarGuard node instance using the specified connection type.
@@ -140,7 +141,7 @@ def create_node(
         raise ValueError("invalid backend type")
 
 
-def create_node_from_config(config: NodeConfig, **runtime_overrides) -> PasarGuardNode:
+def create_node_from_config(config: NodeConfig, **runtime_overrides: Any) -> PasarGuardNode:
     data = config.to_dict()
     data.update(runtime_overrides)
     connection = NodeType(data.pop("connection"))
@@ -154,7 +155,7 @@ async def save_node_config(registry: NodeRegistryProtocol, node_id: str, config:
 
 
 async def create_node_from_registry(
-    registry: NodeRegistryProtocol, node_id: str, **runtime_overrides
+    registry: NodeRegistryProtocol, node_id: str, **runtime_overrides: Any
 ) -> PasarGuardNode:
     config = await registry.get_node(node_id)
     if config is None:

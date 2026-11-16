@@ -9,8 +9,13 @@ import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from ipaddress import ip_address
+from typing import Any, Self
 
 import aiohttp
+from aiohttp.client_proto import ResponseHandler
+from aiohttp.client_reqrep import ConnectionKey
+from aiohttp.connector import Connection
+from aiohttp.tracing import Trace
 from aiohttp_socks import ProxyConnector
 from cryptography import x509
 
@@ -61,7 +66,7 @@ class TLSPolicy:
     certificate_sha256: str | None
 
     @classmethod
-    def resolve(cls, server_ca: str | None, certificate_sha256: str | None):
+    def resolve(cls, server_ca: str | None, certificate_sha256: str | None) -> Self:
         pem = "" if server_ca is None else server_ca
         if not isinstance(pem, str):
             raise TypeError("server_ca must be PEM text")
@@ -85,7 +90,7 @@ class TLSPolicy:
         ctx.set_alpn_protocols([alpn])
         return ctx
 
-    def verify(self, transport, host: str) -> datetime:
+    def verify(self, transport: asyncio.Transport, host: str) -> datetime:
         """Verify the actual TLS peer, returning its expiry for connection retirement."""
         peer = transport.get_extra_info("ssl_object")
         if peer is None:
@@ -111,7 +116,7 @@ class TLSPolicy:
             raise TLSVerificationError(f"Certificate identity mismatch: SAN does not match {host}")
         return cert.not_valid_after_utc
 
-    def guard(self, transport, host: str) -> None:
+    def guard(self, transport: asyncio.Transport, host: str) -> None:
         if not self.certificate_sha256:
             return
         try:
@@ -124,7 +129,7 @@ class TLSPolicy:
         delay = max(0, (expiry - datetime.now(UTC)).total_seconds())
         reference = weakref.ref(transport)
 
-        def expire():
+        def expire() -> None:
             current = reference()
             if current is not None:
                 current.abort()
@@ -134,16 +139,18 @@ class TLSPolicy:
 
 
 class _PinnedConnectorMixin:
-    def __init__(self, *args, tls_policy: TLSPolicy, **kwargs):
+    def __init__(self, *args: Any, tls_policy: TLSPolicy, **kwargs: Any) -> None:
         self._tls_policy = tls_policy
         super().__init__(*args, **kwargs)
 
-    async def _create_connection(self, req, traces, timeout):
+    async def _create_connection(
+        self, req: aiohttp.ClientRequest, traces: list[Trace], timeout: aiohttp.ClientTimeout
+    ) -> ResponseHandler:
         protocol = await super()._create_connection(req, traces, timeout)
         self._tls_policy.guard(protocol.transport, req.url.raw_host)
         return protocol
 
-    async def _get(self, key, traces):
+    async def _get(self, key: ConnectionKey, traces: list[Trace]) -> Connection | None:
         connection = await super()._get(key, traces)
         if connection is not None:
             try:
@@ -155,12 +162,14 @@ class _PinnedConnectorMixin:
 
 
 class PinnedTCPConnector(_PinnedConnectorMixin, aiohttp.TCPConnector):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._proxy_ssl_context = ssl.create_default_context()
         self._proxy_ssl_context.set_alpn_protocols(["http/1.1"])
 
-    async def _create_proxy_connection(self, req, traces, timeout):
+    async def _create_proxy_connection(
+        self, req: aiohttp.ClientRequest, traces: list[Trace], timeout: aiohttp.ClientTimeout
+    ) -> tuple[asyncio.BaseTransport, ResponseHandler]:
         # aiohttp may merge session defaults into proxy_headers. Node credentials
         # belong only inside the verified destination tunnel.
         original_headers = req.proxy_headers
@@ -173,7 +182,13 @@ class PinnedTCPConnector(_PinnedConnectorMixin, aiohttp.TCPConnector):
         finally:
             req.proxy_headers = original_headers
 
-    async def _wrap_create_connection(self, *args, req, client_error=aiohttp.ClientConnectorError, **kwargs):
+    async def _wrap_create_connection(
+        self,
+        *args: Any,
+        req: aiohttp.ClientRequest,
+        client_error: type[Exception] = aiohttp.ClientConnectorError,
+        **kwargs: Any,
+    ) -> tuple[asyncio.Transport, ResponseHandler]:
         # aiohttp marks the outer proxy connection with this error class. Verify
         # its CA and hostname before CONNECT can send proxy credentials; the
         # inner TLS connection keeps the node context and certificate pin.
