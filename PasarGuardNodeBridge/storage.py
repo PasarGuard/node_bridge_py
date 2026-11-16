@@ -16,7 +16,7 @@ class NodeConfig:
     port: int
     api_port: int
     api_key: str
-    server_ca: str | None = None
+    server_ca: str | None = field(default=None, kw_only=True)
     name: str = "default"
     extra: dict[str, Any] = field(default_factory=dict)
     default_timeout: int = 10

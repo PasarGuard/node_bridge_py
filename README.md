@@ -78,7 +78,7 @@ from the saved fields, with no fallback after a failure:
 | Otherwise, nonempty `server_ca` | Existing PEM trust store and hostname verification |
 | Both absent/empty | Runtime system trust store and standard identity verification |
 
-`api_key` is required and precedes `server_ca` in positional constructors. Existing keyword-based
+`api_key` is required. Both `server_ca=None` and `certificate_sha256=None` are keyword-only. Existing keyword-based
 PEM configurations continue working. For a publicly trusted certificate, omit `server_ca` and
 `certificate_sha256` (or pass `server_ca=None`/`""`). For self-signed certificates, pass
 `certificate_sha256="ab..."` using the SHA-256 of the complete leaf certificate DER encoding.

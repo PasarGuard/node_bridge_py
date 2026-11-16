@@ -139,7 +139,6 @@ class Controller:
         self,
         api_key: str,
         service_url: str,
-        server_ca: str | None = None,
         name: str = "default",
         extra: dict[str, Any] | None = None,
         logger: logging.Logger | None = None,
@@ -157,6 +156,7 @@ class Controller:
         sync_chunk_size: int = 100,
         user_sync_resolver: Callable[[str, list[str]], Awaitable[list[User]]] | None = None,
         *,
+        server_ca: str | None = None,
         certificate_sha256: str | None = None,
     ) -> None:
         for option, value in (("sync_poll_interval", sync_poll_interval), ("sync_lease_seconds", sync_lease_seconds)):
@@ -258,7 +258,7 @@ class Controller:
             proxy_auth=None if self._proxy is None else self._proxy.aiohttp_proxy_auth,
         )
 
-    async def configure_tls(self, server_ca: str | None = None, *, certificate_sha256: str | None = None) -> None:
+    async def configure_tls(self, *, server_ca: str | None = None, certificate_sha256: str | None = None) -> None:
         """Replace verification fields and retire every existing transport/pool.
 
         Both fields describe the complete new configuration; omitted fields are cleared.

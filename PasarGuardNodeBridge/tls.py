@@ -161,11 +161,8 @@ class _PinnedConnectorMixin:
         return connection
 
 
-class PinnedTCPConnector(_PinnedConnectorMixin, aiohttp.TCPConnector):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._proxy_ssl_context = ssl.create_default_context()
-        self._proxy_ssl_context.set_alpn_protocols(["http/1.1"])
+class NodeTCPConnector(aiohttp.TCPConnector):
+    """Keep destination credentials out of HTTP proxy CONNECT requests."""
 
     async def _create_proxy_connection(
         self, req: aiohttp.ClientRequest, traces: list[Trace], timeout: aiohttp.ClientTimeout
@@ -181,6 +178,13 @@ class PinnedTCPConnector(_PinnedConnectorMixin, aiohttp.TCPConnector):
             return await super()._create_proxy_connection(req, traces, timeout)
         finally:
             req.proxy_headers = original_headers
+
+
+class PinnedTCPConnector(_PinnedConnectorMixin, NodeTCPConnector):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._proxy_ssl_context = ssl.create_default_context()
+        self._proxy_ssl_context.set_alpn_protocols(["http/1.1"])
 
     async def _wrap_create_connection(
         self,

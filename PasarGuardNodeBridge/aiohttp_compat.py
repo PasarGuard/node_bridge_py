@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import aiohttp
 
-from PasarGuardNodeBridge.tls import PinnedTCPConnector, TLSPolicy
+from PasarGuardNodeBridge.tls import NodeTCPConnector, PinnedTCPConnector, TLSPolicy
 
 
 def make_timeout(timeout: float | None) -> aiohttp.ClientTimeout:
@@ -92,7 +92,7 @@ class LazyClientSession:
             elif self._connector_factory is not None:
                 connector = self._connector_factory(self._ssl_context)
             else:
-                connector = aiohttp.TCPConnector(ssl=self._ssl_context)
+                connector = NodeTCPConnector(ssl=self._ssl_context)
             self._session = aiohttp.ClientSession(
                 connector=connector,
                 headers=self._headers,

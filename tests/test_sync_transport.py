@@ -318,7 +318,7 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(status=status):
                 calls = []
 
-                def redirect(emails):
+                def redirect(emails, calls=calls, status=status):
                     calls.append(emails)
                     return web.Response(status=status, headers={"Location": "/users/sync"})
 

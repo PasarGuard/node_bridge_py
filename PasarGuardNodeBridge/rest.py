@@ -26,7 +26,6 @@ class Node(PasarGuardNode):
         port: int,
         api_port: int,
         api_key: str,
-        server_ca: str | None = None,
         name: str = "default",
         extra: dict[str, Any] | None = None,
         logger: logging.Logger | None = None,
@@ -34,6 +33,7 @@ class Node(PasarGuardNode):
         internal_timeout: int = 15,
         proxy: str | None = None,
         *,
+        server_ca: str | None = None,
         certificate_sha256: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -42,13 +42,13 @@ class Node(PasarGuardNode):
         super().__init__(
             api_key,
             service_url,
-            server_ca,
             name,
             extra,
             logger,
             default_timeout,
             internal_timeout,
             proxy,
+            server_ca=server_ca,
             certificate_sha256=certificate_sha256,
             **kwargs,
         )
