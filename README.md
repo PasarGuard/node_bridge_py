@@ -108,6 +108,12 @@ a new one whenever either verification field changes.
 - `http://user:pass@127.0.0.1:3128`
 - `https://user:pass@proxy.example.com:443`
 
+REST and maintenance requests support HTTPS proxies with certificate pinning. The proxy certificate
+is verified against the runtime system trust store, including its hostname, before proxy credentials
+are sent. The node certificate is verified separately against `certificate_sha256` inside the tunnel.
+For a private proxy CA, configure the runtime trust store (for example, `SSL_CERT_FILE`);
+`server_ca` and `certificate_sha256` describe the node. gRPC does not support HTTPS proxies.
+
 ### Connection Types
 
 - `Bridge.NodeType.grpc`: gRPC transport via `grpclib`

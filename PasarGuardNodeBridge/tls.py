@@ -155,7 +155,31 @@ class _PinnedConnectorMixin:
 
 
 class PinnedTCPConnector(_PinnedConnectorMixin, aiohttp.TCPConnector):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._proxy_ssl_context = ssl.create_default_context()
+        self._proxy_ssl_context.set_alpn_protocols(["http/1.1"])
+
+    async def _create_proxy_connection(self, req, traces, timeout):
+        # aiohttp may merge session defaults into proxy_headers. Node credentials
+        # belong only inside the verified destination tunnel.
+        original_headers = req.proxy_headers
+        if original_headers is not None:
+            req.proxy_headers = original_headers.copy()
+            req.proxy_headers.popall("x-api-key", None)
+            req.proxy_headers.popall("Authorization", None)
+        try:
+            return await super()._create_proxy_connection(req, traces, timeout)
+        finally:
+            req.proxy_headers = original_headers
+
+    async def _wrap_create_connection(self, *args, req, client_error=aiohttp.ClientConnectorError, **kwargs):
+        # aiohttp marks the outer proxy connection with this error class. Verify
+        # its CA and hostname before CONNECT can send proxy credentials; the
+        # inner TLS connection keeps the node context and certificate pin.
+        if client_error is aiohttp.ClientProxyConnectionError and kwargs.get("ssl") is not None:
+            kwargs["ssl"] = self._proxy_ssl_context
+        return await super()._wrap_create_connection(*args, req=req, client_error=client_error, **kwargs)
 
 
 class PinnedProxyConnector(_PinnedConnectorMixin, ProxyConnector):

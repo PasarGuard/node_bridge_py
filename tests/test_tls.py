@@ -143,6 +143,125 @@ class PolicyTests(unittest.TestCase):
 
 
 class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_https_proxy_verifies_proxy_before_auth_and_node_before_api_key(self):
+        for transport in ("rest", "maintenance"):
+            for credentials in ("", "user:password@"):
+                for failure in (
+                    None, "trust", "identity", "expired", "proxy-pin", "pin", "node-identity", "node-expired"
+                ):
+                    with self.subTest(transport=transport, credentials=bool(credentials), failure=failure):
+                        with tempfile.TemporaryDirectory() as node_dir, tempfile.TemporaryDirectory() as proxy_dir:
+                            node_ctx, _, pin = certificate(
+                                node_dir,
+                                identity="127.0.0.2" if failure == "node-identity" else "127.0.0.1",
+                                dates="expired" if failure == "node-expired" else "valid",
+                            )
+                            proxy_ctx, proxy_pem, _ = certificate(
+                                proxy_dir,
+                                identity="127.0.0.2" if failure == "identity" else "127.0.0.1",
+                                dates="expired" if failure == "expired" else "valid",
+                            )
+                            if failure == "proxy-pin":
+                                # The destination pin must not authorize an untrusted proxy,
+                                # even if it presents the pinned destination certificate.
+                                proxy_ctx = node_ctx
+                            received, connects = [], []
+
+                            async def receive(request):
+                                received.append(dict(request.headers))
+                                return web.Response(body=b"ok")
+
+                            app = web.Application()
+                            app.router.add_get("/", receive)
+                            runner = web.AppRunner(app)
+                            await runner.setup()
+                            site = web.TCPSite(runner, "127.0.0.1", 0, ssl_context=node_ctx)
+                            await site.start()
+                            port = site._server.sockets[0].getsockname()[1]
+
+                            async def tunnel(reader, writer):
+                                upstream_writer = None
+                                try:
+                                    connects.append(await reader.readuntil(b"\r\n\r\n"))
+                                    upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", port)
+                                    writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                                    await writer.drain()
+
+                                    async def copy(source, destination):
+                                        try:
+                                            while data := await source.read(65536):
+                                                destination.write(data)
+                                                await destination.drain()
+                                        finally:
+                                            destination.close()
+
+                                    await asyncio.gather(copy(reader, upstream_writer), copy(upstream_reader, writer))
+                                except (ConnectionError, asyncio.IncompleteReadError):
+                                    pass
+                                finally:
+                                    writer.close()
+                                    if upstream_writer is not None:
+                                        upstream_writer.close()
+
+                            proxy = await asyncio.start_server(tunnel, "127.0.0.1", 0, ssl=proxy_ctx)
+                            proxy_port = proxy.sockets[0].getsockname()[1]
+                            node = RestNode(
+                                "127.0.0.1",
+                                port,
+                                port,
+                                KEY,
+                                certificate_sha256="00" * 32 if failure == "pin" else pin,
+                                proxy=f"https://{credentials}127.0.0.1:{proxy_port}",
+                            )
+                            original = ssl.create_default_context
+
+                            def proxy_trust(*args, **kwargs):
+                                context = original(*args, **kwargs)
+                                if failure != "trust":
+                                    context.load_verify_locations(cadata=proxy_pem)
+                                return context
+
+                            async def request():
+                                if transport == "rest":
+                                    return await node._make_request("GET", "/", 3)
+                                return await node._make_json_request("GET", "/")
+
+                            try:
+                                # Only the proxy is CA-trusted. The independent node
+                                # certificate must still be accepted exclusively by pin.
+                                with patch("ssl.create_default_context", side_effect=proxy_trust):
+                                    if failure:
+                                        expected = {
+                                            "pin": "fingerprint mismatch",
+                                            "node-identity": "identity mismatch",
+                                            "node-expired": "invalid dates",
+                                        }.get(failure, "Certificate")
+                                        with self.assertRaisesRegex(NodeAPIError, expected):
+                                            await request()
+                                        self.assertEqual(received, [])
+                                        if failure in ("trust", "identity", "expired", "proxy-pin"):
+                                            self.assertEqual(connects, [])
+                                    else:
+                                        await request()
+                                        await request()
+                                        self.assertEqual(len(connects), 1)
+                                        self.assertEqual(len(received), 2)
+                                        self.assertTrue(all(headers.get("x-api-key") == KEY for headers in received))
+                                        self.assertTrue(
+                                            all("Proxy-Authorization" not in headers for headers in received)
+                                        )
+                                    if connects:
+                                        self.assertNotIn(KEY.encode(), connects[0])
+                                        self.assertEqual(
+                                            b"Proxy-Authorization: Basic " in connects[0], bool(credentials)
+                                        )
+                            finally:
+                                await node._client.close()
+                                await node._json_client.close()
+                                proxy.close()
+                                await proxy.wait_closed()
+                                await runner.cleanup()
+
     async def asyncSetUp(self):
         # Rejected TLS handshakes normally reset the test server's accepted socket.
         loop = asyncio.get_running_loop()
@@ -337,15 +456,22 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
                 context.load_verify_locations(cadata=pem)
                 return context
 
-            with patch("ssl.create_default_context", side_effect=trusted_context if system else original):
+            with patch(
+                "ssl.create_default_context", side_effect=trusted_context if system or proxy == "https" else original
+            ):
                 node = node_class("127.0.0.1", port, port, KEY, ca, certificate_sha256=fingerprint, **kwargs)
 
             async def request():
-                if transport == "grpc":
-                    return await node._handle_grpc_request(node._client.GetBaseInfo, service.Empty())
-                if transport == "maintenance":
-                    return await node._make_json_request("GET", "/")
-                return await node._make_request("POST", "/", 3, service.Empty())
+                # Sessions create their connectors lazily, including proxy trust.
+                with patch(
+                    "ssl.create_default_context",
+                    side_effect=trusted_context if system or proxy == "https" else original,
+                ):
+                    if transport == "grpc":
+                        return await node._handle_grpc_request(node._client.GetBaseInfo, service.Empty())
+                    if transport == "maintenance":
+                        return await node._make_json_request("GET", "/")
+                    return await node._make_request("POST", "/", 3, service.Empty())
 
             try:
                 if failure == "race":
@@ -414,8 +540,8 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
                     await request()
                     self.assertEqual(len(received), 3)
                     if transport != "grpc":
-                        response = await node._make_json_request("GET", "/redirect")
-                        self.assertEqual(response.status_code, 302)
+                        with self.assertRaises(NodeAPIError):
+                            await node._make_json_request("GET", "/redirect")
                         self.assertEqual(len(received), 4)
             finally:
                 if transport == "grpc":

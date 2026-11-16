@@ -31,7 +31,7 @@ class BufferedResponse:
         return json.loads(self.text)
 
     def raise_for_status(self) -> None:
-        if 400 <= self.status_code:
+        if 300 <= self.status_code:
             raise BufferedStatusError(self)
 
 
