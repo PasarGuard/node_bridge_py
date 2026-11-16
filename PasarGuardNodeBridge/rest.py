@@ -2,7 +2,8 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import TypeVar, overload
+from types import TracebackType
+from typing import Any, NoReturn, Self, TypeVar, overload
 
 import aiohttp
 from google.protobuf.message import DecodeError, Message
@@ -12,6 +13,7 @@ from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientS
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
+from PasarGuardNodeBridge.tls import verification_error_detail
 from PasarGuardNodeBridge.utils import format_host_for_url
 
 ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
@@ -23,20 +25,21 @@ class Node(PasarGuardNode):
         address: str,
         port: int,
         api_port: int,
-        server_ca: str,
         api_key: str,
         name: str = "default",
-        extra: dict | None = None,
+        extra: dict[str, Any] | None = None,
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
         proxy: str | None = None,
-        **kwargs,
-    ):
+        *,
+        server_ca: str | None = None,
+        certificate_sha256: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(
-            server_ca,
             api_key,
             service_url,
             name,
@@ -45,12 +48,15 @@ class Node(PasarGuardNode):
             default_timeout,
             internal_timeout,
             proxy,
+            server_ca=server_ca,
+            certificate_sha256=certificate_sha256,
             **kwargs,
         )
 
         url = f"https://{host_for_url}:{port}/"
         self._client = LazyClientSession(
-            ssl_context=self.ctx,
+            ssl_context=self.http1_ctx,
+            tls_policy=self._tls_policy,
             headers={"Content-Type": "application/x-protobuf", "x-api-key": api_key},
             base_url=url,
             timeout=make_timeout(None),
@@ -61,10 +67,12 @@ class Node(PasarGuardNode):
 
         self._node_lock = asyncio.Lock()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
+    ) -> None:
         await self.stop()
         await self._client.close()
         await self._json_client.close()
@@ -82,8 +90,10 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-2, detail=f"Error deserialising protobuf: {e}")
         return proto_instance
 
-    def _handle_error(self, error: BaseException):
-        if isinstance(error, aiohttp.ServerDisconnectedError):
+    def _handle_error(self, error: BaseException) -> NoReturn:
+        if isinstance(error, aiohttp.ClientConnectorCertificateError):
+            raise NodeAPIError(code=-2, detail=verification_error_detail(error))
+        elif isinstance(error, aiohttp.ServerDisconnectedError):
             raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
         elif isinstance(error, aiohttp.ClientConnectorError):
             # Connection errors (connection refused, DNS errors, etc.) are NOT timeouts
@@ -233,9 +243,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(
                             f"[{self.name}] Best-effort stop request failed | Error: {type(e).__name__} - {e!s}"
                         )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
-                    )
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
                 await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
                 raise
@@ -350,7 +358,7 @@ class Node(PasarGuardNode):
                     break
             return bytes(encoded)
 
-        async def _iter_chunks():
+        async def _iter_chunks() -> AsyncGenerator[bytes, None]:
             # Send a terminating empty chunk when no users are provided
             if not users:
                 chunk_bytes = self._serialize_protobuf(service.UsersChunk(index=0, last=True))
@@ -508,7 +516,7 @@ class Node(PasarGuardNode):
                 failed.append(user)
         return failed
 
-    async def _check_node_health(self):
+    async def _check_node_health(self) -> None:
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
         max_retries = 3

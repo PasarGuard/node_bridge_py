@@ -20,6 +20,7 @@ __author__ = "PasarGuard"
 
 
 from enum import Enum
+from typing import Any
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
 from PasarGuardNodeBridge.controller import Health, NodeAPIError
@@ -52,9 +53,11 @@ def create_node(
     connection: NodeType,
     address: str,
     port: int,
-    server_ca: str,
     api_key: str,
-    **kwargs,
+    *,
+    server_ca: str | None = None,
+    certificate_sha256: str | None = None,
+    **kwargs: Any,
 ) -> PasarGuardNode:
     """
     Create and initialize a PasarGuard node instance using the specified connection type.
@@ -66,8 +69,9 @@ def create_node(
         connection (NodeType): Type of node connection. Must be `NodeType.grpc` or `NodeType.rest`.
         address (str): IP address or domain name of the node.
         port (int): Port number used to connect to the node.
-        server_ca (str): The server's SSL certificate as a string (PEM format).
-        api_key (str): API key used for authentication with the node.
+        api_key (str): Required API key used for authentication with the node.
+        server_ca (str | None): Optional keyword-only PEM trust certificates; defaults to None for system trust.
+        certificate_sha256 (str | None): Optional leaf certificate pin; takes precedence over PEM.
         **kwargs: Additional optional arguments:
             - name (str): Node instance name for logging. Defaults to "default".
             - extra (dict): Optional dictionary to pass custom metadata or configuration. Defaults to {}.
@@ -118,6 +122,7 @@ def create_node(
             address=address,
             port=port,
             server_ca=server_ca,
+            certificate_sha256=certificate_sha256,
             api_key=api_key,
             **kwargs,
         )
@@ -127,6 +132,7 @@ def create_node(
             address=address,
             port=port,
             server_ca=server_ca,
+            certificate_sha256=certificate_sha256,
             api_key=api_key,
             **kwargs,
         )
@@ -135,10 +141,12 @@ def create_node(
         raise ValueError("invalid backend type")
 
 
-def create_node_from_config(config: NodeConfig, **runtime_overrides) -> PasarGuardNode:
+def create_node_from_config(config: NodeConfig, **runtime_overrides: Any) -> PasarGuardNode:
     data = config.to_dict()
     data.update(runtime_overrides)
     connection = NodeType(data.pop("connection"))
+    if connection is NodeType.rest:
+        data.pop("max_message_size", None)
     return create_node(connection=connection, **data)
 
 
@@ -147,7 +155,7 @@ async def save_node_config(registry: NodeRegistryProtocol, node_id: str, config:
 
 
 async def create_node_from_registry(
-    registry: NodeRegistryProtocol, node_id: str, **runtime_overrides
+    registry: NodeRegistryProtocol, node_id: str, **runtime_overrides: Any
 ) -> PasarGuardNode:
     config = await registry.get_node(node_id)
     if config is None:

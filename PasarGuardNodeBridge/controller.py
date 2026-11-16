@@ -2,11 +2,12 @@ import asyncio
 import logging
 import math
 import ssl
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from enum import IntEnum
 from json import JSONDecodeError
+from typing import Any
 from uuid import UUID
 
 import aiohttp
@@ -32,6 +33,7 @@ from PasarGuardNodeBridge.storage import (
     get_default_lifecycle_coordinator,
     get_default_user_sync_store,
 )
+from PasarGuardNodeBridge.tls import TLSPolicy, verification_error_detail
 
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
@@ -48,11 +50,11 @@ MAINTENANCE_TIMEOUTS = {
 
 
 class NodeAPIError(Exception):
-    def __init__(self, code, detail):
+    def __init__(self, code: int, detail: str) -> None:
         self.code = code
         self.detail = detail
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"NodeAPIError(code={self.code}, detail={self.detail})"
 
 
@@ -63,7 +65,7 @@ class Health(IntEnum):
     INVALID = 3
 
 
-class FailedUsers(list):
+class FailedUsers(list[User]):
     """Users a delta sync did not apply.
 
     ``rejected`` is set when the node received them and its backend refused to apply them: the node
@@ -71,13 +73,13 @@ class FailedUsers(list):
     failures leave it unset.
     """
 
-    def __init__(self, users=(), rejected: bool = False, detail: str = ""):
+    def __init__(self, users: Iterable[User] = (), rejected: bool = False, detail: str = "") -> None:
         super().__init__(users)
         self.rejected = rejected
         self.detail = detail
 
 
-class _Delivery(list):
+class _Delivery(list[User]):
     """Users to put back in the queue after a delivery (transport failures).
 
     ``isolated`` lists ``(user, node error)`` for each user the node rejected on its own; they leave
@@ -86,7 +88,13 @@ class _Delivery(list):
     sent one by one if ``deferred_alone`` (the round found as many rejected users as accepted ones).
     """
 
-    def __init__(self, failed=(), isolated=(), deferred=(), deferred_alone=False):
+    def __init__(
+        self,
+        failed: Iterable[User] = (),
+        isolated: Iterable[tuple[User, str]] = (),
+        deferred: Iterable[User] = (),
+        deferred_alone: bool = False,
+    ) -> None:
         super().__init__(failed)
         self.isolated = list(isolated)
         self.deferred = list(deferred)
@@ -116,7 +124,7 @@ class _RejectedUser:
 class FullSyncHold:
     """Ownership check for a renewable full-sync lease."""
 
-    def __init__(self, owner: asyncio.Task, until: float):
+    def __init__(self, owner: asyncio.Task[Any], until: float) -> None:
         self.owner = owner
         self.until = until
         self.lost = False
@@ -129,11 +137,10 @@ class FullSyncHold:
 class Controller:
     def __init__(
         self,
-        server_ca: str,
         api_key: str,
         service_url: str,
         name: str = "default",
-        extra: dict | None = None,
+        extra: dict[str, Any] | None = None,
         logger: logging.Logger | None = None,
         default_timeout: int = DEFAULT_API_TIMEOUT,
         internal_timeout: int = DEFAULT_INTERNAL_TIMEOUT,
@@ -148,7 +155,10 @@ class Controller:
         sync_batch_size: int = 100,
         sync_chunk_size: int = 100,
         user_sync_resolver: Callable[[str, list[str]], Awaitable[list[User]]] | None = None,
-    ):
+        *,
+        server_ca: str | None = None,
+        certificate_sha256: str | None = None,
+    ) -> None:
         for option, value in (("sync_poll_interval", sync_poll_interval), ("sync_lease_seconds", sync_lease_seconds)):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{option} must be finite and positive")
@@ -178,25 +188,16 @@ class Controller:
         self._internal_timeout = internal_timeout
         try:
             self.api_key = UUID(api_key)
-
-            self.h2_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            self.h2_ctx.load_verify_locations(cadata=server_ca)
-            self.h2_ctx.check_hostname = True
-            self.h2_ctx.set_alpn_protocols(["h2"])
-
-            self.http1_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            self.http1_ctx.load_verify_locations(cadata=server_ca)
-            self.http1_ctx.check_hostname = True
-            self.http1_ctx.set_alpn_protocols(["http/1.1"])
-
-            # Backward-compatible alias for existing transport code that still expects `self.ctx`.
-            self.ctx = self.h2_ctx
-
-        except ssl.SSLError as e:
-            raise NodeAPIError(-1, f"SSL initialization failed: {e!s}")
-
         except (ValueError, TypeError) as e:
-            raise NodeAPIError(-2, f"Invalid API key format: {e!s}")
+            raise NodeAPIError(-2, f"Invalid API key format: {e!s}") from e
+
+        try:
+            self._tls_policy = TLSPolicy.resolve(server_ca, certificate_sha256)
+            self.h2_ctx = self._tls_policy.context("h2")
+            self.http1_ctx = self._tls_policy.context("http/1.1")
+            self.ctx = self.h2_ctx
+        except (ssl.SSLError, ValueError, TypeError) as e:
+            raise NodeAPIError(-1, f"SSL initialization failed: {e!s}") from e
 
         try:
             self._proxy = parse_proxy_url(proxy)
@@ -204,14 +205,14 @@ class Controller:
             raise NodeAPIError(-6, f"Invalid proxy format: {e!s}") from e
 
         self._health = Health.NOT_CONNECTED
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: list[asyncio.Task[None]] = []
         self._node_version = ""
         self._core_version = ""
         self._extra = extra
 
         # Lazy worker sync mechanism
         self._user_sync_store = user_sync_store if user_sync_store is not None else get_default_user_sync_store()
-        self._sync_worker_task: asyncio.Task | None = None
+        self._sync_worker_task: asyncio.Task[None] | None = None
         self._work_available = asyncio.Event()
         self._worker_idle_timeout = 5.0  # seconds before worker exits
         self._sync_poll_interval = sync_poll_interval
@@ -220,7 +221,7 @@ class Controller:
             lifecycle_coordinator if lifecycle_coordinator is not None else get_default_lifecycle_coordinator()
         )
         self._lifecycle_lease_seconds = lifecycle_lease_seconds
-        self._lifecycle_heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._lifecycle_heartbeat_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Hard reset mechanism for critical failures
         self._hard_reset_event = asyncio.Event()
@@ -248,6 +249,7 @@ class Controller:
 
         self._json_client = LazyClientSession(
             ssl_context=self.http1_ctx,
+            tls_policy=self._tls_policy,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             base_url=service_url,
             timeout=make_timeout(default_timeout),
@@ -256,7 +258,34 @@ class Controller:
             proxy_auth=None if self._proxy is None else self._proxy.aiohttp_proxy_auth,
         )
 
-    async def set_health(self, health: Health):
+    async def configure_tls(self, *, server_ca: str | None = None, certificate_sha256: str | None = None) -> None:
+        """Replace verification fields and retire every existing transport/pool.
+
+        Both fields describe the complete new configuration; omitted fields are cleared.
+        Validation failures leave the current configuration and connections intact.
+        """
+        try:
+            policy = TLSPolicy.resolve(server_ca, certificate_sha256)
+            h2_ctx, http1_ctx = policy.context("h2"), policy.context("http/1.1")
+        except (ssl.SSLError, ValueError, TypeError) as e:
+            raise NodeAPIError(-1, f"SSL initialization failed: {e!s}") from e
+        self._tls_policy = policy
+        self.h2_ctx, self.http1_ctx, self.ctx = h2_ctx, http1_ctx, h2_ctx
+        old_sessions = []
+        for client in (self._json_client, getattr(self, "_client", None)):
+            if isinstance(client, LazyClientSession):
+                old = client.replace_tls(http1_ctx, policy)
+                if old is not None:
+                    old_sessions.append(old)
+        channel = getattr(self, "channel", None)
+        if channel is not None:
+            channel.close()
+            channel._ssl = h2_ctx
+            channel._tls_policy = policy
+        for session in old_sessions:
+            await session.close()
+
+    async def set_health(self, health: Health) -> None:
         async with self._health_lock:
             # INVALID is permanent - once set, it cannot be changed (instance is being deleted)
             if self._health is Health.INVALID:
@@ -274,7 +303,7 @@ class Controller:
         """
         return self._hard_reset_event.is_set()
 
-    async def _increment_user_sync_failure(self):
+    async def _increment_user_sync_failure(self) -> None:
         """Increment user sync failure counter and check if hard reset is needed."""
         async with self._failure_count_lock:
             self._user_sync_failure_count += 1
@@ -284,7 +313,7 @@ class Controller:
                     f"[{self.name}] HARD RESET REQUIRED: User sync failed {self._user_sync_failure_count} times in a row"
                 )
 
-    async def _reset_user_sync_failure_count(self):
+    async def _reset_user_sync_failure_count(self) -> None:
         """Reset user sync failure counter on successful sync and clear hard reset event."""
         async with self._failure_count_lock:
             old_count = self._user_sync_failure_count
@@ -297,7 +326,7 @@ class Controller:
                         f"[{self.name}] User sync recovered after {old_count} failures, cleared hard reset event"
                     )
 
-    async def update_user(self, user: User):
+    async def update_user(self, user: User) -> None:
         """Queue a user for sync. Automatically deduplicates by email."""
         # A newer change replaces any rejected payload held for retry.
         self._sync_retries.pop(user.email, None)
@@ -307,7 +336,7 @@ class Controller:
         # Ensure worker is running to process the update
         await self._ensure_sync_worker_running()
 
-    async def update_users(self, users: list[User]):
+    async def update_users(self, users: list[User]) -> None:
         """Queue multiple users for sync. Automatically deduplicates by email."""
         if not users:
             return
@@ -359,7 +388,7 @@ class Controller:
             )
             return None, None  # Keep current delays
 
-    async def flush_pending_users(self):
+    async def flush_pending_users(self) -> None:
         """Clear all pending users without syncing them."""
         self._sync_retries.clear()
         await self._user_sync_store.clear(self.node_id)
@@ -381,7 +410,7 @@ class Controller:
         async with self._version_lock:
             return self._node_version, self._core_version
 
-    async def get_extra(self) -> dict:
+    async def get_extra(self) -> dict[str, Any]:
         async with self._version_lock:
             return self._extra
 
@@ -421,9 +450,7 @@ class Controller:
         try:
             state = await self._lifecycle_coordinator.get_state(lease.node_id)
         except Exception as e:
-            self.logger.warning(
-                f"[{self.name}] Lifecycle lease state read failed | Error: {type(e).__name__} - {e!s}"
-            )
+            self.logger.warning(f"[{self.name}] Lifecycle lease state read failed | Error: {type(e).__name__} - {e!s}")
             return True
         return (
             state is not None
@@ -510,7 +537,9 @@ class Controller:
     async def update_observed_lifecycle(self, observed: LifecycleStatus, expected_epoch: int | None = None) -> None:
         await self._lifecycle_coordinator.update_observed(self.node_id, observed, expected_epoch)
 
-    async def connect(self, node_version: str, core_version: str, tasks: list | None = None):
+    async def connect(
+        self, node_version: str, core_version: str, tasks: list[Callable[[], Coroutine[Any, Any, None]]] | None = None
+    ) -> None:
         # Validate versions are not empty
         if not node_version or not core_version:
             raise NodeAPIError(-3, "Invalid version information from node")
@@ -547,7 +576,7 @@ class Controller:
         self._recovery_until = asyncio.get_running_loop().time() + self._sync_lease_seconds
         await self.wake_sync_worker()
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         # Set shutdown event (no lock needed)
         self._shutdown_event.set()
 
@@ -567,7 +596,7 @@ class Controller:
             if self._health is not Health.INVALID:
                 self._health = Health.NOT_CONNECTED
 
-    async def _cleanup_tasks(self):
+    async def _cleanup_tasks(self) -> None:
         """Clean up all background tasks properly - must be called with task_lock held"""
         if self._tasks:
             for task in self._tasks:
@@ -588,7 +617,7 @@ class Controller:
 
             self._tasks.clear()
 
-    async def _cleanup_sync_worker(self):
+    async def _cleanup_sync_worker(self) -> None:
         """Stop this worker without deleting shared pending or leased work."""
         async with self._sync_worker_lock:
             task = self._sync_worker_task
@@ -606,7 +635,7 @@ class Controller:
         self._work_available.set()
         await self._ensure_sync_worker_running()
 
-    async def _ensure_sync_worker_running(self):
+    async def _ensure_sync_worker_running(self) -> None:
         async with self._sync_worker_lock:
             if not self.is_shutting_down() and (self._sync_worker_task is None or self._sync_worker_task.done()):
                 self._sync_worker_task = asyncio.create_task(self._sync_worker())
@@ -647,7 +676,7 @@ class Controller:
             self._work_available.set()
             raise
 
-    async def _ack_claimed_users(self, claimed_users: list[ClaimedUser]):
+    async def _ack_claimed_users(self, claimed_users: list[ClaimedUser]) -> None:
         if not claimed_users:
             return
         active, generation = await self._fence_state()
@@ -667,7 +696,7 @@ class Controller:
             await refresh(self.node_id, list(unconfirmed))
             self._work_available.set()
 
-    async def _requeue_claimed_users(self, claimed_users: list[ClaimedUser]):
+    async def _requeue_claimed_users(self, claimed_users: list[ClaimedUser]) -> None:
         if claimed_users:
             self._work_available.set()
             await self._user_sync_store.requeue_users(self.node_id, claimed_users)
@@ -843,7 +872,7 @@ class Controller:
             entry.queued_at = now
         self._work_available.set()
 
-    async def _sync_worker(self):
+    async def _sync_worker(self) -> None:
         """Drain bounded batches, retaining wakes and retrying failures with backoff."""
         retry_delay = 1.0
         claimed: list[ClaimedUser] = []
@@ -1035,7 +1064,7 @@ class Controller:
         method: str,
         endpoint: str,
         timeout: int | None = None,
-        json: dict | None = None,
+        json: dict[str, Any] | None = None,
     ) -> BufferedResponse:
         """Make an HTTP request to the node's REST API."""
         if timeout is None:
@@ -1063,7 +1092,7 @@ class Controller:
             raise NodeAPIError(code=e.response.status_code, detail=detail) from e
 
         except (TimeoutError, aiohttp.ClientError) as e:
-            raise NodeAPIError(code=-5, detail=f"Request error: {e!s}") from e
+            raise NodeAPIError(code=-5, detail=f"Request error: {verification_error_detail(e)}") from e
 
     async def check_connectivity(self) -> bool:
         """Check if the node service is reachable via its REST API."""
@@ -1078,7 +1107,7 @@ class Controller:
         self,
         operation: LifecycleOperation,
         endpoint: str,
-        json: dict | None = None,
+        json: dict[str, Any] | None = None,
     ) -> BufferedResponse:
         if not (await self.check_connectivity()):
             raise NodeAPIError(code=503, detail="Node service is not reachable")

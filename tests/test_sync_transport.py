@@ -14,6 +14,7 @@ from grpclib.server import Server
 from PasarGuardNodeBridge.aiohttp_compat import LazyClientSession, make_timeout
 from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.controller import NodeAPIError
 from PasarGuardNodeBridge.grpclib import Node as GrpcNode
 from PasarGuardNodeBridge.rest import Node as RestNode
 from PasarGuardNodeBridge.storage import InMemoryUserSyncStore
@@ -311,6 +312,24 @@ class SyncTransportTests(unittest.IsolatedAsyncioTestCase):
                 node._hold_rejected_user(held, "proxy is not a UserManager")
                 await node.start(config="{}", backend_type=0, users=[held])
                 self.assertEqual(node._sync_retries, {})
+
+    async def test_rest_redirects_fail_requests_and_retain_chunked_users(self):
+        for status in (301, 302, 303, 307, 308):
+            with self.subTest(status=status):
+                calls = []
+
+                def redirect(emails, calls=calls, status=status):
+                    calls.append(emails)
+                    return web.Response(status=status, headers={"Location": "/users/sync"})
+
+                node = await self.start_rest(redirect)
+                with self.assertRaises(NodeAPIError):
+                    await node._make_request("PUT", "users/sync/chunked", 3)
+                users = [service.User(email="pending")]
+                failed = await node.sync_users_chunked(users)
+                self.assertEqual(failed, users)
+                self.assertFalse(failed.rejected)
+                self.assertEqual(calls, [[], ["pending"]])
 
     async def test_only_backend_rejections_are_split(self):
         grpc_cases = [

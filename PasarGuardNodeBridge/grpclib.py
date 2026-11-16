@@ -1,12 +1,17 @@
 import asyncio
 import logging
+import ssl
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from types import TracebackType
+from typing import Any, NoReturn, Self, TypeVar
 
-from grpclib.client import Channel, Stream
+from google.protobuf.message import Message
+from grpclib.client import Channel, Stream, UnaryUnaryMethod
 from grpclib.config import Configuration
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError, StreamTerminatedError
+from grpclib.protocol import H2Protocol
 from python_socks.async_.asyncio import Proxy
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
@@ -14,25 +19,63 @@ from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
-from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status
+from PasarGuardNodeBridge.tls import TLSPolicy, verification_error_detail
+from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status, normalize_host
+
+RequestT = TypeVar("RequestT", bound=Message)
+ResponseT = TypeVar("ResponseT", bound=Message)
 
 
 class ProxiedChannel(Channel):
-    def __init__(self, *args, proxy_url: str, **kwargs):
+    def __init__(self, *args: Any, proxy_url: str, proxy_rdns: bool | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._proxy_url = proxy_url
+        self._proxy_rdns = proxy_rdns
 
-    async def _create_connection(self):
-        proxy = Proxy.from_url(self._proxy_url)
+    async def _create_connection(self) -> H2Protocol:
+        proxy = Proxy.from_url(self._proxy_url, rdns=self._proxy_rdns)
         sock = await proxy.connect(dest_host=self._host, dest_port=self._port)
         server_hostname = self._config.ssl_target_name_override or self._host
-        _, protocol = await self._loop.create_connection(
-            self._protocol_factory,
-            sock=sock,
-            ssl=self._ssl,
-            server_hostname=(server_hostname if self._ssl is not None else None),
-        )
+        try:
+            _, protocol = await self._loop.create_connection(
+                self._protocol_factory,
+                sock=sock,
+                ssl=self._ssl,
+                server_hostname=(server_hostname if self._ssl is not None else None),
+            )
+        except BaseException:
+            sock.close()
+            raise
         return protocol
+
+
+class VerifiedChannel(Channel):
+    def __init__(self, *args: Any, tls_policy: TLSPolicy, **kwargs: Any) -> None:
+        self._tls_policy = tls_policy
+        super().__init__(*args, **kwargs)
+
+    async def _create_connection(self) -> H2Protocol:
+        policy = self._tls_policy
+        protocol = await super()._create_connection()
+        if policy is not self._tls_policy:
+            protocol.connection._transport.abort()
+            raise ConnectionError("TLS verification configuration changed while connecting; reconnect required")
+        policy.guard(protocol.connection._transport, self._host)
+        return protocol
+
+    async def __connect__(self) -> H2Protocol:
+        protocol = await super().__connect__()
+        if self._tls_policy.certificate_sha256:
+            try:
+                self._tls_policy.verify(protocol.connection._transport, self._host)
+            except BaseException:
+                self.close()
+                raise
+        return protocol
+
+
+class VerifiedProxiedChannel(VerifiedChannel, ProxiedChannel):
+    pass
 
 
 class Node(PasarGuardNode):
@@ -41,21 +84,22 @@ class Node(PasarGuardNode):
         address: str,
         port: int,
         api_port: int,
-        server_ca: str,
         api_key: str,
         name: str = "default",
-        extra: dict | None = None,
+        extra: dict[str, Any] | None = None,
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
         max_message_size: int | None = None,
         proxy: str | None = None,
-        **kwargs,
-    ):
+        *,
+        server_ca: str | None = None,
+        certificate_sha256: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(
-            server_ca,
             api_key,
             service_url,
             name,
@@ -64,6 +108,8 @@ class Node(PasarGuardNode):
             default_timeout,
             internal_timeout,
             proxy,
+            server_ca=server_ca,
+            certificate_sha256=certificate_sha256,
             **kwargs,
         )
 
@@ -74,15 +120,17 @@ class Node(PasarGuardNode):
             if max_message_size is None:
                 max_message_size = 64 * 1024 * 1024  # 64MB
             self._max_message_size = max_message_size
-            channel_class = Channel if self._proxy is None else ProxiedChannel
+            channel_class = VerifiedChannel if self._proxy is None else VerifiedProxiedChannel
             channel_kwargs = {}
             if self._proxy is not None:
                 if not self._proxy.grpc_supported:
                     raise NodeAPIError(-7, f"{self._proxy.scheme.upper()} proxies are not supported for gRPC transport")
                 channel_kwargs["proxy_url"] = self._proxy.url
+                channel_kwargs["proxy_rdns"] = self._proxy.rdns
 
             self.channel = channel_class(
-                host=address,
+                host=normalize_host(address),
+                tls_policy=self._tls_policy,
                 port=port,
                 ssl=self.ctx,
                 config=Configuration(
@@ -101,7 +149,7 @@ class Node(PasarGuardNode):
 
         self._node_lock = asyncio.Lock()
 
-    def _close_chan(self):
+    def _close_chan(self) -> None:
         """Close gRPC channel"""
         if hasattr(self, "channel"):
             try:
@@ -109,20 +157,24 @@ class Node(PasarGuardNode):
             except Exception as e:
                 self.logger.debug(f"[{self.name}] Failed to close gRPC channel | Error: {type(e).__name__} - {e!s}")
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
+    ) -> None:
         await self.stop()
         self._close_chan()
 
-    def __del__(self):
+    def __del__(self) -> None:
         self._close_chan()
 
-    def _handle_error(self, error: BaseException):
+    def _handle_error(self, error: BaseException) -> NoReturn:
         """Convert gRPC errors to NodeAPIError with HTTP status codes."""
         if isinstance(error, asyncio.TimeoutError):
             raise NodeAPIError(-1, "Request timed out")
+        elif isinstance(error, ssl.SSLCertVerificationError):
+            raise NodeAPIError(-2, verification_error_detail(error))
         elif isinstance(error, GRPCError):
             http_status = grpc_to_http_status(error.status)
             message = error.message or "Unknown gRPC error"
@@ -132,7 +184,9 @@ class Node(PasarGuardNode):
         else:
             raise NodeAPIError(0, str(error))
 
-    async def _handle_grpc_request(self, method, request, timeout: int | None = None):
+    async def _handle_grpc_request(
+        self, method: UnaryUnaryMethod[RequestT, ResponseT], request: RequestT, timeout: int | None = None
+    ) -> ResponseT:
         """Handle a gRPC request and convert errors to NodeAPIError."""
         timeout = timeout or self._internal_timeout
         try:
@@ -213,9 +267,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(
                             f"[{self.name}] Best-effort Stop request failed | Error: {type(e).__name__} - {e!s}"
                         )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
-                    )
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
                 await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
                 raise
@@ -453,7 +505,7 @@ class Node(PasarGuardNode):
             return users
         return failed
 
-    async def _check_node_health(self):
+    async def _check_node_health(self) -> None:
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
         max_retries = 3
@@ -549,7 +601,7 @@ class Node(PasarGuardNode):
         log_queue: asyncio.Queue[str | NodeAPIError] = asyncio.Queue(maxsize=max_queue_size)
         stream_task = None
 
-        async def _receive_logs(stream: Stream[service.Empty, service.Log]):
+        async def _receive_logs(stream: Stream[service.Empty, service.Log]) -> None:
             """Receive log messages and put them in the queue."""
             try:
                 while True:

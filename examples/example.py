@@ -1,5 +1,6 @@
 import asyncio
 from logging import DEBUG, Formatter, StreamHandler, getLogger
+from pathlib import Path
 
 import PasarGuardNodeBridge as Bridge
 from PasarGuardNodeBridge.common import service_pb2 as service
@@ -7,15 +8,10 @@ from PasarGuardNodeBridge.common import service_pb2 as service
 address = "172.27.158.135"
 port = 2096
 api_port = 2097
-server_ca_file = "certs/ssl_cert.pem"
 config_file = "config/xray.json"
 api_key = "d04d8680-942d-4365-992f-9f482275691d"
 
-with open(config_file, "r") as f:
-    config = f.read()
-
-with open(server_ca_file, "r") as f:
-    server_ca_content = f.read()
+config = Path(config_file).read_text()
 
 
 async def main():
@@ -36,13 +32,17 @@ async def main():
         address=address,
         port=port,
         api_port=api_port,
-        server_ca=server_ca_content,
         api_key=api_key,
+        # System trust is the default; server_ca can be omitted.
+        # For a self-signed certificate, supply its SHA-256 leaf certificate fingerprint:
+        # certificate_sha256="...",
+        # For legacy PEM verification:
+        # server_ca=Path("certs/ssl_cert.pem").read_text(),
         extra={"id": 1},
         name="example-node",
         default_timeout=15,  # Custom default timeout for API calls (default: 10s)
-        internal_timeout=20,
-        logger=logger,  # Custom timeout for internal operations (default: 15s)
+        internal_timeout=20,  # Custom timeout for internal operations (default: 15s)
+        logger=logger,
         # proxy="socks5://user:pass@127.0.0.1:1080",
     )
 
