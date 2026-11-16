@@ -15,14 +15,15 @@ class NodeConfig:
     address: str
     port: int
     api_port: int
-    server_ca: str
     api_key: str
+    server_ca: str | None = None
     name: str = "default"
     extra: dict[str, Any] = field(default_factory=dict)
     default_timeout: int = 10
     internal_timeout: int = 15
     proxy: str | None = None
     max_message_size: int | None = None
+    certificate_sha256: str | None = field(default=None, kw_only=True)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

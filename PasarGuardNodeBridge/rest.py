@@ -12,6 +12,7 @@ from PasarGuardNodeBridge.aiohttp_compat import BufferedStatusError, LazyClientS
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
+from PasarGuardNodeBridge.tls import verification_error_detail
 from PasarGuardNodeBridge.utils import format_host_for_url
 
 ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
@@ -23,34 +24,38 @@ class Node(PasarGuardNode):
         address: str,
         port: int,
         api_port: int,
-        server_ca: str,
         api_key: str,
+        server_ca: str | None = None,
         name: str = "default",
         extra: dict | None = None,
         logger: logging.Logger | None = None,
         default_timeout: int = 10,
         internal_timeout: int = 15,
         proxy: str | None = None,
+        *,
+        certificate_sha256: str | None = None,
         **kwargs,
     ):
         host_for_url = format_host_for_url(address)
         service_url = f"https://{host_for_url}:{api_port}/"
         super().__init__(
-            server_ca,
             api_key,
             service_url,
+            server_ca,
             name,
             extra,
             logger,
             default_timeout,
             internal_timeout,
             proxy,
+            certificate_sha256=certificate_sha256,
             **kwargs,
         )
 
         url = f"https://{host_for_url}:{port}/"
         self._client = LazyClientSession(
-            ssl_context=self.ctx,
+            ssl_context=self.http1_ctx,
+            tls_policy=self._tls_policy,
             headers={"Content-Type": "application/x-protobuf", "x-api-key": api_key},
             base_url=url,
             timeout=make_timeout(None),
@@ -83,7 +88,9 @@ class Node(PasarGuardNode):
         return proto_instance
 
     def _handle_error(self, error: BaseException):
-        if isinstance(error, aiohttp.ServerDisconnectedError):
+        if isinstance(error, aiohttp.ClientConnectorCertificateError):
+            raise NodeAPIError(code=-2, detail=verification_error_detail(error))
+        elif isinstance(error, aiohttp.ServerDisconnectedError):
             raise NodeAPIError(code=500, detail=f"Server closed connection: {error}")
         elif isinstance(error, aiohttp.ClientConnectorError):
             # Connection errors (connection refused, DNS errors, etc.) are NOT timeouts
@@ -233,9 +240,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(
                             f"[{self.name}] Best-effort stop request failed | Error: {type(e).__name__} - {e!s}"
                         )
-                    await self._release_lifecycle_lease(
-                        lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED
-                    )
+                    await self._release_lifecycle_lease(lease, LifecycleStatus.STOPPED, desired=LifecycleStatus.STOPPED)
             except BaseException:
                 await self._release_lifecycle_lease(lease, LifecycleStatus.BROKEN, desired=LifecycleStatus.STOPPED)
                 raise

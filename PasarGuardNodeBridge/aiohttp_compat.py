@@ -4,6 +4,8 @@ from typing import Any
 
 import aiohttp
 
+from PasarGuardNodeBridge.tls import PinnedTCPConnector
+
 
 def make_timeout(timeout: float | None) -> aiohttp.ClientTimeout:
     """Apply the same timeout value across aiohttp's available request phases."""
@@ -62,7 +64,9 @@ class LazyClientSession:
         connector_factory=None,
         proxy: str | None = None,
         proxy_auth: aiohttp.BasicAuth | None = None,
+        tls_policy=None,
     ):
+        self._tls_policy = tls_policy
         self._ssl_context = ssl_context
         self._headers = headers
         self._base_url = base_url
@@ -75,7 +79,13 @@ class LazyClientSession:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             connector = None
-            if self._connector_factory is not None:
+            if self._tls_policy is not None and self._tls_policy.certificate_sha256:
+                if self._connector_factory is not None:
+                    # The factory carries the parsed SOCKS URL; build the guarded variant.
+                    connector = self._connector_factory(self._ssl_context, tls_policy=self._tls_policy)
+                else:
+                    connector = PinnedTCPConnector(ssl=self._ssl_context, tls_policy=self._tls_policy)
+            elif self._connector_factory is not None:
                 connector = self._connector_factory(self._ssl_context)
             else:
                 connector = aiohttp.TCPConnector(ssl=self._ssl_context)
@@ -90,11 +100,19 @@ class LazyClientSession:
         return self._session
 
     def request(self, *args, **kwargs):
+        kwargs["allow_redirects"] = False
         return _LazyRequestContext(self, args, kwargs)
 
     async def get(self, *args, **kwargs) -> aiohttp.ClientResponse:
         session = await self._get_session()
+        kwargs["allow_redirects"] = False
         return await session.get(*args, **kwargs)
+
+    def replace_tls(self, ssl_context, tls_policy):
+        self._ssl_context = ssl_context
+        self._tls_policy = tls_policy
+        old, self._session = self._session, None
+        return old
 
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:

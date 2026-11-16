@@ -52,8 +52,10 @@ def create_node(
     connection: NodeType,
     address: str,
     port: int,
-    server_ca: str,
     api_key: str,
+    server_ca: str | None = None,
+    *,
+    certificate_sha256: str | None = None,
     **kwargs,
 ) -> PasarGuardNode:
     """
@@ -66,8 +68,9 @@ def create_node(
         connection (NodeType): Type of node connection. Must be `NodeType.grpc` or `NodeType.rest`.
         address (str): IP address or domain name of the node.
         port (int): Port number used to connect to the node.
-        server_ca (str): The server's SSL certificate as a string (PEM format).
-        api_key (str): API key used for authentication with the node.
+        api_key (str): Required API key used for authentication with the node.
+        server_ca (str | None): Optional PEM trust certificates; defaults to None for system trust.
+        certificate_sha256 (str | None): Optional leaf certificate pin; takes precedence over PEM.
         **kwargs: Additional optional arguments:
             - name (str): Node instance name for logging. Defaults to "default".
             - extra (dict): Optional dictionary to pass custom metadata or configuration. Defaults to {}.
@@ -118,6 +121,7 @@ def create_node(
             address=address,
             port=port,
             server_ca=server_ca,
+            certificate_sha256=certificate_sha256,
             api_key=api_key,
             **kwargs,
         )
@@ -127,6 +131,7 @@ def create_node(
             address=address,
             port=port,
             server_ca=server_ca,
+            certificate_sha256=certificate_sha256,
             api_key=api_key,
             **kwargs,
         )
@@ -139,6 +144,8 @@ def create_node_from_config(config: NodeConfig, **runtime_overrides) -> PasarGua
     data = config.to_dict()
     data.update(runtime_overrides)
     connection = NodeType(data.pop("connection"))
+    if connection is NodeType.rest:
+        data.pop("max_message_size", None)
     return create_node(connection=connection, **data)
 
 

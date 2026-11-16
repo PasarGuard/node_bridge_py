@@ -32,6 +32,7 @@ from PasarGuardNodeBridge.storage import (
     get_default_lifecycle_coordinator,
     get_default_user_sync_store,
 )
+from PasarGuardNodeBridge.tls import TLSPolicy, verification_error_detail
 
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
@@ -129,9 +130,9 @@ class FullSyncHold:
 class Controller:
     def __init__(
         self,
-        server_ca: str,
         api_key: str,
         service_url: str,
+        server_ca: str | None = None,
         name: str = "default",
         extra: dict | None = None,
         logger: logging.Logger | None = None,
@@ -148,6 +149,8 @@ class Controller:
         sync_batch_size: int = 100,
         sync_chunk_size: int = 100,
         user_sync_resolver: Callable[[str, list[str]], Awaitable[list[User]]] | None = None,
+        *,
+        certificate_sha256: str | None = None,
     ):
         for option, value in (("sync_poll_interval", sync_poll_interval), ("sync_lease_seconds", sync_lease_seconds)):
             if not math.isfinite(value) or value <= 0:
@@ -178,25 +181,16 @@ class Controller:
         self._internal_timeout = internal_timeout
         try:
             self.api_key = UUID(api_key)
-
-            self.h2_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            self.h2_ctx.load_verify_locations(cadata=server_ca)
-            self.h2_ctx.check_hostname = True
-            self.h2_ctx.set_alpn_protocols(["h2"])
-
-            self.http1_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            self.http1_ctx.load_verify_locations(cadata=server_ca)
-            self.http1_ctx.check_hostname = True
-            self.http1_ctx.set_alpn_protocols(["http/1.1"])
-
-            # Backward-compatible alias for existing transport code that still expects `self.ctx`.
-            self.ctx = self.h2_ctx
-
-        except ssl.SSLError as e:
-            raise NodeAPIError(-1, f"SSL initialization failed: {e!s}")
-
         except (ValueError, TypeError) as e:
-            raise NodeAPIError(-2, f"Invalid API key format: {e!s}")
+            raise NodeAPIError(-2, f"Invalid API key format: {e!s}") from e
+
+        try:
+            self._tls_policy = TLSPolicy.resolve(server_ca, certificate_sha256)
+            self.h2_ctx = self._tls_policy.context("h2")
+            self.http1_ctx = self._tls_policy.context("http/1.1")
+            self.ctx = self.h2_ctx
+        except (ssl.SSLError, ValueError, TypeError) as e:
+            raise NodeAPIError(-1, f"SSL initialization failed: {e!s}") from e
 
         try:
             self._proxy = parse_proxy_url(proxy)
@@ -248,6 +242,7 @@ class Controller:
 
         self._json_client = LazyClientSession(
             ssl_context=self.http1_ctx,
+            tls_policy=self._tls_policy,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             base_url=service_url,
             timeout=make_timeout(default_timeout),
@@ -255,6 +250,33 @@ class Controller:
             proxy=None if self._proxy is None else self._proxy.aiohttp_proxy_url,
             proxy_auth=None if self._proxy is None else self._proxy.aiohttp_proxy_auth,
         )
+
+    async def configure_tls(self, server_ca: str | None = None, *, certificate_sha256: str | None = None) -> None:
+        """Replace verification fields and retire every existing transport/pool.
+
+        Both fields describe the complete new configuration; omitted fields are cleared.
+        Validation failures leave the current configuration and connections intact.
+        """
+        try:
+            policy = TLSPolicy.resolve(server_ca, certificate_sha256)
+            h2_ctx, http1_ctx = policy.context("h2"), policy.context("http/1.1")
+        except (ssl.SSLError, ValueError, TypeError) as e:
+            raise NodeAPIError(-1, f"SSL initialization failed: {e!s}") from e
+        self._tls_policy = policy
+        self.h2_ctx, self.http1_ctx, self.ctx = h2_ctx, http1_ctx, h2_ctx
+        old_sessions = []
+        for client in (self._json_client, getattr(self, "_client", None)):
+            if isinstance(client, LazyClientSession):
+                old = client.replace_tls(http1_ctx, policy)
+                if old is not None:
+                    old_sessions.append(old)
+        channel = getattr(self, "channel", None)
+        if channel is not None:
+            channel.close()
+            channel._ssl = h2_ctx
+            channel._tls_policy = policy
+        for session in old_sessions:
+            await session.close()
 
     async def set_health(self, health: Health):
         async with self._health_lock:
@@ -421,9 +443,7 @@ class Controller:
         try:
             state = await self._lifecycle_coordinator.get_state(lease.node_id)
         except Exception as e:
-            self.logger.warning(
-                f"[{self.name}] Lifecycle lease state read failed | Error: {type(e).__name__} - {e!s}"
-            )
+            self.logger.warning(f"[{self.name}] Lifecycle lease state read failed | Error: {type(e).__name__} - {e!s}")
             return True
         return (
             state is not None
@@ -1063,7 +1083,7 @@ class Controller:
             raise NodeAPIError(code=e.response.status_code, detail=detail) from e
 
         except (TimeoutError, aiohttp.ClientError) as e:
-            raise NodeAPIError(code=-5, detail=f"Request error: {e!s}") from e
+            raise NodeAPIError(code=-5, detail=f"Request error: {verification_error_detail(e)}") from e
 
     async def check_connectivity(self) -> bool:
         """Check if the node service is reachable via its REST API."""
