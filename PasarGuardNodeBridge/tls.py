@@ -24,6 +24,17 @@ class TLSVerificationError(aiohttp.ClientConnectionError):
     """A pinned peer failed certificate verification."""
 
 
+def _poll_transport_expiry(loop: asyncio.AbstractEventLoop, transport: asyncio.Transport, deadline: float) -> None:
+    """Retire transports without weakref support, releasing closed ones promptly."""
+    if transport.is_closing():
+        return
+    remaining = deadline - loop.time()
+    if remaining <= 0:
+        transport.abort()
+    else:
+        loop.call_later(min(remaining, 1.0), _poll_transport_expiry, loop, transport, deadline)
+
+
 def verification_error_detail(error: BaseException) -> str:
     certificate_error = getattr(error, "certificate_error", error)
     if isinstance(certificate_error, ssl.SSLCertVerificationError):
@@ -127,7 +138,14 @@ class TLSPolicy:
         # Abort active streams as well as idle pooled connections at certificate expiry.
         loop = asyncio.get_running_loop()
         delay = max(0, (expiry - datetime.now(UTC)).total_seconds())
-        reference = weakref.ref(transport)
+        try:
+            reference = weakref.ref(transport)
+        except TypeError:
+            # uvloop SSL transports cannot be weak-referenced. Poll their closed
+            # state so a strong reference lasts at most one second after close,
+            # while still aborting active connections at certificate expiry.
+            loop.call_later(min(delay, 1.0), _poll_transport_expiry, loop, transport, loop.time() + delay)
+            return
 
         def expire() -> None:
             current = reference()

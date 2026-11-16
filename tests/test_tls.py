@@ -9,7 +9,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from aiohttp import web
 from cryptography import x509
@@ -26,6 +26,11 @@ from PasarGuardNodeBridge.controller import NodeAPIError
 from PasarGuardNodeBridge.grpclib import Node as GrpcNode
 from PasarGuardNodeBridge.rest import Node as RestNode
 from PasarGuardNodeBridge.tls import TLSPolicy, normalize_fingerprint
+
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
 
 KEY = "00000000-0000-0000-0000-000000000000"
 
@@ -71,6 +76,48 @@ def certificate(directory, *, identity="127.0.0.1", dates="valid", san=True):
 
 
 class PolicyTests(unittest.TestCase):
+    def test_non_weakref_transport_expiry_and_close(self):
+        class Transport:
+            __slots__ = ("aborted", "closed")
+
+            def __init__(self):
+                self.closed = False
+                self.aborted = False
+
+            def is_closing(self):
+                return self.closed
+
+            def abort(self):
+                self.aborted = True
+
+        for close_early in (False, True):
+            with self.subTest(close_early=close_early):
+                transport = Transport()
+                loop = Mock()
+                loop.time.return_value = 100.0
+                expiry = datetime.now(UTC) + timedelta(days=30)
+                policy = TLSPolicy.resolve(None, "ab" * 32)
+                with (
+                    patch.object(TLSPolicy, "verify", return_value=expiry),
+                    patch("PasarGuardNodeBridge.tls.asyncio.get_running_loop", return_value=loop),
+                ):
+                    policy.guard(transport, "localhost")
+                delay, callback, *args = loop.call_later.call_args.args
+                self.assertEqual(delay, 1.0)
+                deadline = args[-1]
+                # A live connection keeps its expiry check scheduled.
+                loop.call_later.reset_mock()
+                loop.time.return_value = deadline - 0.25
+                callback(*args)
+                self.assertFalse(transport.aborted)
+                self.assertEqual(loop.call_later.call_args.args[0], 0.25)
+                loop.call_later.reset_mock()
+                transport.closed = close_early
+                loop.time.return_value = deadline
+                callback(*args)
+                self.assertEqual(transport.aborted, not close_early)
+                loop.call_later.assert_not_called()
+
     def test_normalization(self):
         self.assertEqual(normalize_fingerprint(":".join(["AB"] * 32)), "ab" * 32)
         self.assertEqual(normalize_fingerprint("AB" * 32), "ab" * 32)
@@ -636,3 +683,14 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
                     await self.exercise(transport, legacy=legacy, system=system)
             await self.exercise(transport, system=True, failure="identity")
             await self.exercise(transport, system=False, failure="trust", legacy=False)
+
+
+@unittest.skipIf(uvloop is None, "uvloop is unavailable on this platform")
+class UVLoopTLSTransportTests(TLSTransportTests):
+    @staticmethod
+    def loop_factory():
+        return uvloop.new_event_loop()
+
+    def _setupAsyncioRunner(self):
+        # IsolatedAsyncioTestCase gained loop_factory in Python 3.13.
+        self._asyncioRunner = asyncio.Runner(debug=True, loop_factory=self.loop_factory)
