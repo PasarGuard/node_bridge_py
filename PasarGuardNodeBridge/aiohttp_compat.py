@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import aiohttp
 
-from PasarGuardNodeBridge.tls import NodeTCPConnector, PinnedTCPConnector, TLSPolicy
+from PasarGuardNodeBridge.tls import NodeTCPConnector, PinnedTCPConnector, TLSPolicy, TLSStatus
 
 
 def make_timeout(timeout: float | None) -> aiohttp.ClientTimeout:
@@ -69,7 +69,9 @@ class LazyClientSession:
         proxy: str | None = None,
         proxy_auth: aiohttp.BasicAuth | None = None,
         tls_policy: TLSPolicy | None = None,
+        tls_status: TLSStatus | None = None,
     ) -> None:
+        self.tls_status = tls_status
         self._tls_policy = tls_policy
         self._ssl_context = ssl_context
         self._headers = headers
@@ -83,12 +85,16 @@ class LazyClientSession:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             connector = None
-            if self._tls_policy is not None and self._tls_policy.certificate_sha256:
+            if self._tls_policy is not None:
                 if self._connector_factory is not None:
                     # The factory carries the parsed SOCKS URL; build the guarded variant.
-                    connector = self._connector_factory(self._ssl_context, tls_policy=self._tls_policy)
+                    connector = self._connector_factory(
+                        self._ssl_context, tls_policy=self._tls_policy, tls_status=self.tls_status
+                    )
                 else:
-                    connector = PinnedTCPConnector(ssl=self._ssl_context, tls_policy=self._tls_policy)
+                    connector = PinnedTCPConnector(
+                        ssl=self._ssl_context, tls_policy=self._tls_policy, tls_status=self.tls_status
+                    )
             elif self._connector_factory is not None:
                 connector = self._connector_factory(self._ssl_context)
             else:
@@ -112,9 +118,12 @@ class LazyClientSession:
         kwargs["allow_redirects"] = False
         return await session.get(*args, **kwargs)
 
-    def replace_tls(self, ssl_context: ssl.SSLContext, tls_policy: TLSPolicy) -> aiohttp.ClientSession | None:
+    def replace_tls(
+        self, ssl_context: ssl.SSLContext, tls_policy: TLSPolicy, tls_status: TLSStatus | None = None
+    ) -> aiohttp.ClientSession | None:
         self._ssl_context = ssl_context
         self._tls_policy = tls_policy
+        self.tls_status = tls_status
         old, self._session = self._session, None
         return old
 

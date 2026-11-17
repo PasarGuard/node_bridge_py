@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from types import TracebackType
@@ -57,6 +58,7 @@ class Node(PasarGuardNode):
         self._client = LazyClientSession(
             ssl_context=self.http1_ctx,
             tls_policy=self._tls_policy,
+            tls_status=self._service_tls_status,
             headers={"Content-Type": "application/x-protobuf", "x-api-key": api_key},
             base_url=url,
             timeout=make_timeout(None),
@@ -520,7 +522,7 @@ class Node(PasarGuardNode):
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
         max_retries = 3
-        retry_delay = 2
+        retry_delay = 1.0
         retries = 0
         self.logger.debug(f"[{self.name}] Health check task started")
 
@@ -539,6 +541,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
+                    retry_delay = 1.0
                 except Exception as e:
                     retries += 1
                     error_type = type(e).__name__
@@ -554,8 +557,9 @@ class Node(PasarGuardNode):
                             f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s | "
                             f"Error: {error_type} - {e!s}"
                         )
-                        await asyncio.sleep(retry_delay)
-                        continue
+                    await asyncio.sleep(random.uniform(max(1.0, retry_delay / 2), retry_delay))
+                    retry_delay = min(retry_delay * 2, 60.0)
+                    continue
 
                 try:
                     await asyncio.wait_for(asyncio.sleep(health_check_interval), timeout=health_check_interval + 1)

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import ssl
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -19,7 +20,7 @@ from PasarGuardNodeBridge.common import service_grpc
 from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.controller import FailedUsers, Health, NodeAPIError
 from PasarGuardNodeBridge.storage import LifecycleOperation, LifecycleStatus
-from PasarGuardNodeBridge.tls import TLSPolicy, verification_error_detail
+from PasarGuardNodeBridge.tls import TLSPolicy, TLSStatus, verification_error_detail
 from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status, normalize_host
 
 RequestT = TypeVar("RequestT", bound=Message)
@@ -50,28 +51,25 @@ class ProxiedChannel(Channel):
 
 
 class VerifiedChannel(Channel):
-    def __init__(self, *args: Any, tls_policy: TLSPolicy, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, tls_policy: TLSPolicy, tls_status: TLSStatus | None = None, **kwargs: Any) -> None:
         self._tls_policy = tls_policy
+        self._tls_status = tls_status
         super().__init__(*args, **kwargs)
 
     async def _create_connection(self) -> H2Protocol:
         policy = self._tls_policy
-        protocol = await super()._create_connection()
-        if policy is not self._tls_policy:
-            protocol.connection._transport.abort()
-            raise ConnectionError("TLS verification configuration changed while connecting; reconnect required")
-        policy.guard(protocol.connection._transport, self._host)
-        return protocol
-
-    async def __connect__(self) -> H2Protocol:
-        protocol = await super().__connect__()
-        if self._tls_policy.certificate_sha256:
-            try:
-                self._tls_policy.verify(protocol.connection._transport, self._host)
-            except BaseException:
-                self.close()
-                raise
-        return protocol
+        status = self._tls_status
+        try:
+            protocol = await super()._create_connection()
+            if policy is not self._tls_policy:
+                protocol.connection._transport.abort()
+                raise ConnectionError("TLS verification configuration changed while connecting; reconnect required")
+            policy.guard(protocol.connection._transport, self._host, status)
+            return protocol
+        except Exception as error:
+            if status is not None:
+                status.failed(error)
+            raise
 
 
 class VerifiedProxiedChannel(VerifiedChannel, ProxiedChannel):
@@ -131,6 +129,7 @@ class Node(PasarGuardNode):
             self.channel = channel_class(
                 host=normalize_host(address),
                 tls_policy=self._tls_policy,
+                tls_status=self._service_tls_status,
                 port=port,
                 ssl=self.ctx,
                 config=Configuration(
@@ -509,7 +508,7 @@ class Node(PasarGuardNode):
         """Health check task with proper cancellation handling"""
         health_check_interval = 10
         max_retries = 3
-        retry_delay = 2
+        retry_delay = 1.0
         retries = 0
         self.logger.debug(f"[{self.name}] Health check task started")
 
@@ -528,6 +527,7 @@ class Node(PasarGuardNode):
                         self.logger.debug(f"[{self.name}] Node health is HEALTHY")
                         await self.set_health(Health.HEALTHY)
                     retries = 0
+                    retry_delay = 1.0
                 except Exception as e:
                     retries += 1
                     error_type = type(e).__name__
@@ -543,8 +543,9 @@ class Node(PasarGuardNode):
                             f"[{self.name}] Health check failed, retry {retries}/{max_retries} in {retry_delay}s | "
                             f"Error: {error_type} - {e!s}"
                         )
-                        await asyncio.sleep(retry_delay)
-                        continue
+                    await asyncio.sleep(random.uniform(max(1.0, retry_delay / 2), retry_delay))
+                    retry_delay = min(retry_delay * 2, 60.0)
+                    continue
 
                 try:
                     await asyncio.wait_for(asyncio.sleep(health_check_interval), timeout=health_check_interval + 1)

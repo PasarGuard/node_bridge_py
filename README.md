@@ -88,8 +88,20 @@ SAN; the Common Name is never used as a fallback.
 
 The main service and maintenance endpoints must present the same leaf certificate when pinned,
 including behind a TLS-terminating proxy. The address and both ports identify the TLS frontend;
-the bridge has no plaintext backend option. HTTP redirects are disabled. Pinned streams and pooled
-connections close at certificate expiry; reconnects repeat all verification before sending credentials.
+the bridge has no plaintext backend option. HTTP redirects are disabled. Established streams and pooled
+connections remain usable after certificate expiry. Fresh connections repeat date, identity, and
+trust/pin verification before sending credentials; a matching pin never bypasses date checks.
+Health-check reconnection attempts use exponential backoff with jitter from one second up to one minute.
+Direct requests and interrupted mutations are not automatically replayed.
+
+`node.get_tls_status()` returns separate `service` and `maintenance` observations in memory. Each
+contains `fingerprint`, `not_valid_before`, `not_valid_after`, `observed_at` (UTC datetimes),
+`connection_error`, `error_at`, `unknown`, and `stale`. Only a fresh verified handshake refreshes
+the certificate observation and clears a connection error. Errors retain the last verified certificate;
+unknown or expired observations are stale. Treat an expired observation as “last observed certificate
+expired”: an established connection may still work while fresh connections fail. Applications can
+apply additional age limits using `observed_at`. Creating a new client for an endpoint change or
+calling `configure_tls(...)` clears both observations. Pins and PEM are never automatically replaced.
 
 `NodeConfig` and registry helpers preserve the optional fingerprint through serialization. To change
 verification on a live client, use `await node.configure_tls(server_ca=pem, certificate_sha256=pin)`.

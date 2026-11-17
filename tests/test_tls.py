@@ -9,7 +9,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from aiohttp import web
 from cryptography import x509
@@ -76,47 +76,21 @@ def certificate(directory, *, identity="127.0.0.1", dates="valid", san=True):
 
 
 class PolicyTests(unittest.TestCase):
-    def test_non_weakref_transport_expiry_and_close(self):
+    def test_guard_does_not_schedule_expiry(self):
+        # Including transports such as uvloop SSL transports without weakrefs.
         class Transport:
-            __slots__ = ("aborted", "closed")
-
-            def __init__(self):
-                self.closed = False
-                self.aborted = False
-
-            def is_closing(self):
-                return self.closed
+            __slots__ = ()
 
             def abort(self):
-                self.aborted = True
+                raise AssertionError("a valid established transport must stay open")
 
-        for close_early in (False, True):
-            with self.subTest(close_early=close_early):
-                transport = Transport()
-                loop = Mock()
-                loop.time.return_value = 100.0
-                expiry = datetime.now(UTC) + timedelta(days=30)
-                policy = TLSPolicy.resolve(None, "ab" * 32)
-                with (
-                    patch.object(TLSPolicy, "verify", return_value=expiry),
-                    patch("PasarGuardNodeBridge.tls.asyncio.get_running_loop", return_value=loop),
-                ):
-                    policy.guard(transport, "localhost")
-                delay, callback, *args = loop.call_later.call_args.args
-                self.assertEqual(delay, 1.0)
-                deadline = args[-1]
-                # A live connection keeps its expiry check scheduled.
-                loop.call_later.reset_mock()
-                loop.time.return_value = deadline - 0.25
-                callback(*args)
-                self.assertFalse(transport.aborted)
-                self.assertEqual(loop.call_later.call_args.args[0], 0.25)
-                loop.call_later.reset_mock()
-                transport.closed = close_early
-                loop.time.return_value = deadline
-                callback(*args)
-                self.assertEqual(transport.aborted, not close_early)
-                loop.call_later.assert_not_called()
+        policy = TLSPolicy.resolve(None, "ab" * 32)
+        with (
+            patch.object(TLSPolicy, "verify", return_value=datetime.now(UTC)),
+            patch.object(asyncio, "get_running_loop") as loop,
+        ):
+            policy.guard(Transport(), "localhost")
+        loop.assert_not_called()
 
     def test_normalization(self):
         self.assertEqual(normalize_fingerprint(":".join(["AB"] * 32)), "ab" * 32)
@@ -327,18 +301,19 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
 
         loop.set_exception_handler(expected_handshake_reset)
 
-    async def test_expiry_closes_active_stream(self):
-        import aiohttp
-
+    async def test_expiry_preserves_active_and_pooled_http(self):
         with tempfile.TemporaryDirectory() as directory:
             ctx, pem, pin = certificate(directory, dates="short")
             released = asyncio.Event()
+            peers = []
 
             async def stream(request):
+                peers.append(request.transport)
                 response = web.StreamResponse()
                 await response.prepare(request)
                 await response.write(b"first line\n")
                 await released.wait()
+                await response.write(b"after expiry\n")
                 return response
 
             app = web.Application()
@@ -350,25 +325,34 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
             port = site._server.sockets[0].getsockname()[1]
             node = RestNode("127.0.0.1", port, port, api_key=KEY, certificate_sha256=pin)
             try:
-                response = await node._client.get("/")
-                self.assertEqual(await response.content.readline(), b"first line\n")
-                with self.assertRaises(aiohttp.ClientPayloadError):
-                    await asyncio.wait_for(response.content.read(), timeout=4)
-                response.close()
+                # REST and maintenance have independent pools.
+                responses = [await client.get("/") for client in (node._client, node._json_client)]
+                transports = [response.connection.transport for response in responses]
+                for response in responses:
+                    self.assertEqual(await response.content.readline(), b"first line\n")
                 expiry = x509.load_pem_x509_certificate(pem.encode()).not_valid_after_utc
-                while datetime.now(UTC) < expiry:
-                    await asyncio.sleep(0.01)
-                with self.assertRaisesRegex(NodeAPIError, "invalid dates"):
-                    await node._make_request("GET", "/", 3)
+                await asyncio.sleep(max(0, (expiry - datetime.now(UTC)).total_seconds()) + 0.1)
+                self.assertTrue(all(not transport.is_closing() for transport in transports))
+                released.set()
+                for response in responses:
+                    self.assertEqual(await asyncio.wait_for(response.content.read(), 2), b"after expiry\n")
+                initial_peers = peers.copy()
+                for index, client in enumerate((node._client, node._json_client)):
+                    response = await client.get("/")
+                    self.assertEqual(await response.read(), b"first line\nafter expiry\n")
+                    self.assertIs(peers[-1], initial_peers[index])
+                    await client.close()
+                    with self.assertRaisesRegex(Exception, "invalid dates"):
+                        await client.get("/")
             finally:
-                if "response" in locals():
+                for response in locals().get("responses", []):
                     response.close()
                 released.set()
                 await node._client.close()
                 await node._json_client.close()
                 await runner.cleanup()
 
-    async def test_expiry_closes_active_grpc(self):
+    async def test_expiry_preserves_active_and_reused_grpc(self):
         with tempfile.TemporaryDirectory() as directory:
             ctx, pem, pin = certificate(directory, dates="short")
             started, released = asyncio.Event(), asyncio.Event()
@@ -394,11 +378,13 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
             pending = asyncio.create_task(node._handle_grpc_request(node._client.GetBaseInfo, service.Empty()))
             try:
                 await asyncio.wait_for(started.wait(), timeout=2)
-                with self.assertRaises(NodeAPIError):
-                    await asyncio.wait_for(pending, timeout=4)
                 expiry = x509.load_pem_x509_certificate(pem.encode()).not_valid_after_utc
-                while datetime.now(UTC) < expiry:
-                    await asyncio.sleep(0.01)
+                await asyncio.sleep(max(0, (expiry - datetime.now(UTC)).total_seconds()) + 0.1)
+                self.assertFalse(pending.done())
+                released.set()
+                await asyncio.wait_for(pending, 2)
+                await node._handle_grpc_request(node._client.GetBaseInfo, service.Empty())
+                node.channel.close()
                 with self.assertRaisesRegex(NodeAPIError, "invalid dates"):
                     await node._handle_grpc_request(node._client.GetBaseInfo, service.Empty())
             finally:
@@ -408,6 +394,153 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
                 await node._json_client.close()
                 server.close()
                 await server.wait_closed()
+
+    async def test_health_reconnect_backoff_and_reset(self):
+        for node_class in (RestNode, GrpcNode):
+            with self.subTest(transport=node_class.__module__):
+                node = node_class("localhost", 1, 2, KEY)
+                await node.set_health(Bridge.Health.HEALTHY)
+                sleeps = []
+                attempts = 0
+
+                async def stats():
+                    nonlocal attempts
+                    attempts += 1
+                    if attempts != 9:
+                        raise NodeAPIError(-1, "offline")
+
+                async def sleep(delay, sleeps=sleeps):
+                    sleeps.append(delay)
+                    if len(sleeps) == 10:
+                        raise asyncio.CancelledError
+
+                try:
+                    with (
+                        patch.object(node, "get_backend_stats", side_effect=stats),
+                        patch(f"{node_class.__module__}.asyncio.sleep", side_effect=sleep),
+                        patch(f"{node_class.__module__}.random.uniform", side_effect=lambda low, high: high),
+                    ):
+                        await node._check_node_health()
+                    self.assertEqual(sleeps, [1, 2, 4, 8, 16, 32, 60, 60, 10, 1])
+                    self.assertEqual(await node.get_health(), Bridge.Health.HEALTHY)
+                finally:
+                    if isinstance(node, GrpcNode):
+                        node.channel.close()
+                    else:
+                        await node._client.close()
+                    await node._json_client.close()
+
+    async def test_certificate_replacement_on_fresh_connections(self):
+        for transport in ("rest", "maintenance", "grpc"):
+            for mode in ("pin", "pem", "system"):
+                with self.subTest(transport=transport, mode=mode):
+                    await self._exercise_certificate_replacement(transport, mode)
+
+    async def _exercise_certificate_replacement(self, transport, mode):
+        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as next_dir:
+            first_ctx, first_pem, first_pin = certificate(first_dir)
+            next_ctx, next_pem, next_pin = certificate(next_dir)
+            active = first_ctx
+            first_ctx.sni_callback = lambda sock, name, ctx: setattr(sock, "context", active)
+            calls = []
+
+            class Receiver:
+                async def receive(inner, stream):
+                    await stream.recv_message()
+                    calls.append(True)
+                    await stream.send_message(service.BaseInfoResponse())
+
+                def __mapping__(inner):
+                    return {
+                        "/service.NodeService/GetBaseInfo": Handler(
+                            inner.receive, Cardinality.UNARY_UNARY, service.Empty, service.BaseInfoResponse
+                        )
+                    }
+
+            if transport == "grpc":
+                server = Server([Receiver()])
+                await server.start("127.0.0.1", 0, ssl=first_ctx)
+                port = server._server.sockets[0].getsockname()[1]
+            else:
+
+                async def receive(request):
+                    calls.append(True)
+                    return web.Response(body=b"ok")
+
+                app = web.Application()
+                app.router.add_get("/", receive)
+                server = web.AppRunner(app)
+                await server.setup()
+                site = web.TCPSite(server, "127.0.0.1", 0, ssl_context=first_ctx)
+                await site.start()
+                port = site._server.sockets[0].getsockname()[1]
+            original_context = ssl.create_default_context
+
+            def trusted_context(*args, **kwargs):
+                ctx = original_context(*args, **kwargs)
+                ctx.load_verify_locations(cadata=first_pem + next_pem)
+                return ctx
+
+            with patch(
+                "ssl.create_default_context",
+                side_effect=trusted_context if mode == "system" else original_context,
+            ):
+                node_class = GrpcNode if transport == "grpc" else RestNode
+                node = node_class(
+                    "127.0.0.1",
+                    port,
+                    port,
+                    KEY,
+                    server_ca=first_pem + next_pem if mode == "pem" else None,
+                    certificate_sha256=first_pin if mode == "pin" else None,
+                )
+            endpoint = "maintenance" if transport == "maintenance" else "service"
+
+            async def request():
+                if transport == "grpc":
+                    return await node._handle_grpc_request(node._client.GetBaseInfo, service.Empty())
+                if transport == "maintenance":
+                    return await node._make_json_request("GET", "/")
+                return await node._make_request("GET", "/", 3)
+
+            async def close_connection():
+                if transport == "grpc":
+                    node.channel.close()
+                else:
+                    await (node._json_client if transport == "maintenance" else node._client).close()
+
+            try:
+                await request()
+                initial = node.get_tls_status()[endpoint]
+                active = next_ctx
+                # Server replacement does not alter the established connection.
+                await request()
+                self.assertEqual(node.get_tls_status()[endpoint], initial)
+                await close_connection()
+                if mode == "pin":
+                    with self.assertRaisesRegex(NodeAPIError, "fingerprint mismatch"):
+                        await request()
+                    self.assertEqual(len(calls), 2)
+                    failed = node.get_tls_status()[endpoint]
+                    self.assertEqual(failed["fingerprint"], first_pin)
+                    self.assertEqual(failed["observed_at"], initial["observed_at"])
+                    self.assertTrue(failed["stale"])
+                    self.assertEqual(node._tls_policy.certificate_sha256, first_pin)
+                    await node.configure_tls(certificate_sha256=next_pin)
+                await request()
+                status = node.get_tls_status()[endpoint]
+                self.assertEqual(status["fingerprint"], next_pin)
+                self.assertFalse(status["stale"])
+                self.assertIsNone(status["connection_error"])
+                self.assertEqual(len(calls), 3)
+            finally:
+                await close_connection()
+                await node._json_client.close()
+                if transport == "grpc":
+                    server.close()
+                    await server.wait_closed()
+                else:
+                    await server.cleanup()
 
     async def exercise(
         self,
@@ -583,7 +716,14 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
                         await request()
                     self.assertEqual(received, [])
                 else:
+                    endpoint = "maintenance" if transport == "maintenance" else "service"
+                    other = "service" if endpoint == "maintenance" else "maintenance"
+                    self.assertTrue(node.get_tls_status()[endpoint]["unknown"])
                     await request()
+                    observed = node.get_tls_status()[endpoint]
+                    self.assertEqual(observed["fingerprint"], pin)
+                    self.assertFalse(observed["stale"])
+                    self.assertTrue(node.get_tls_status()[other]["unknown"])
                     if reconnect:
                         if transport == "grpc":
                             node.channel.close()
@@ -614,14 +754,18 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
                                 {key.lower(): value for key, value in headers.items()}["authorization"],
                                 "Bearer node-secret",
                             )
+                    last_observation = node.get_tls_status()[endpoint]
                     previous_policy = node._tls_policy
                     with self.assertRaises(NodeAPIError):
                         await node.configure_tls(certificate_sha256="malformed")
                     self.assertIs(node._tls_policy, previous_policy)
+                    self.assertEqual(node.get_tls_status()[endpoint], last_observation)
                     await node.configure_tls(server_ca=pem, certificate_sha256="00" * 32)
+                    self.assertTrue(all(status["unknown"] for status in node.get_tls_status().values()))
                     with self.assertRaisesRegex(NodeAPIError, "fingerprint mismatch"):
                         await request()
                     self.assertEqual(len(received), 2)
+                    self.assertIn("fingerprint mismatch", node.get_tls_status()[endpoint]["connection_error"])
                     await node.configure_tls(server_ca=pem)
                     await request()
                     self.assertEqual(len(received), 3)
@@ -681,6 +825,9 @@ class TLSTransportTests(unittest.IsolatedAsyncioTestCase):
             for legacy, system in ((True, False), (False, True)):
                 with self.subTest(transport=transport, legacy=legacy):
                     await self.exercise(transport, legacy=legacy, system=system)
+            for legacy, system in ((True, False), (False, True)):
+                for failure in ("expired", "future"):
+                    await self.exercise(transport, legacy=legacy, system=system, failure=failure)
             await self.exercise(transport, system=True, failure="identity")
             await self.exercise(transport, system=False, failure="trust", legacy=False)
 

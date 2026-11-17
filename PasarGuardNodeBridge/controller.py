@@ -33,7 +33,7 @@ from PasarGuardNodeBridge.storage import (
     get_default_lifecycle_coordinator,
     get_default_user_sync_store,
 )
-from PasarGuardNodeBridge.tls import TLSPolicy, verification_error_detail
+from PasarGuardNodeBridge.tls import TLSPolicy, TLSStatus, verification_error_detail
 
 # Default timeout configuration (module-level constants)
 DEFAULT_API_TIMEOUT = 10  # Default timeout for public API methods
@@ -204,6 +204,9 @@ class Controller:
         except ValueError as e:
             raise NodeAPIError(-6, f"Invalid proxy format: {e!s}") from e
 
+        self._service_tls_status = TLSStatus()
+        self._maintenance_tls_status = TLSStatus()
+
         self._health = Health.NOT_CONNECTED
         self._tasks: list[asyncio.Task[None]] = []
         self._node_version = ""
@@ -250,6 +253,7 @@ class Controller:
         self._json_client = LazyClientSession(
             ssl_context=self.http1_ctx,
             tls_policy=self._tls_policy,
+            tls_status=self._maintenance_tls_status,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             base_url=service_url,
             timeout=make_timeout(default_timeout),
@@ -271,10 +275,13 @@ class Controller:
             raise NodeAPIError(-1, f"SSL initialization failed: {e!s}") from e
         self._tls_policy = policy
         self.h2_ctx, self.http1_ctx, self.ctx = h2_ctx, http1_ctx, h2_ctx
+        self._service_tls_status = TLSStatus()
+        self._maintenance_tls_status = TLSStatus()
         old_sessions = []
         for client in (self._json_client, getattr(self, "_client", None)):
             if isinstance(client, LazyClientSession):
-                old = client.replace_tls(http1_ctx, policy)
+                status = self._maintenance_tls_status if client is self._json_client else self._service_tls_status
+                old = client.replace_tls(http1_ctx, policy, status)
                 if old is not None:
                     old_sessions.append(old)
         channel = getattr(self, "channel", None)
@@ -282,8 +289,20 @@ class Controller:
             channel.close()
             channel._ssl = h2_ctx
             channel._tls_policy = policy
+            channel._tls_status = self._service_tls_status
         for session in old_sessions:
             await session.close()
+
+    def get_tls_status(self) -> dict[str, dict[str, Any]]:
+        """Return separate service and maintenance TLS observations (UTC datetimes).
+
+        Only fresh verified handshakes refresh observations. Reused connections
+        can remain operational after the last observed certificate expires.
+        """
+        return {
+            "service": self._service_tls_status.snapshot(),
+            "maintenance": self._maintenance_tls_status.snapshot(),
+        }
 
     async def set_health(self, health: Health) -> None:
         async with self._health_lock:

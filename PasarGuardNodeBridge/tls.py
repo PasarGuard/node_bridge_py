@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import re
 import ssl
-import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from ipaddress import ip_address
@@ -13,8 +12,6 @@ from typing import Any, Self
 
 import aiohttp
 from aiohttp.client_proto import ResponseHandler
-from aiohttp.client_reqrep import ConnectionKey
-from aiohttp.connector import Connection
 from aiohttp.tracing import Trace
 from aiohttp_socks import ProxyConnector
 from cryptography import x509
@@ -22,17 +19,6 @@ from cryptography import x509
 
 class TLSVerificationError(aiohttp.ClientConnectionError):
     """A pinned peer failed certificate verification."""
-
-
-def _poll_transport_expiry(loop: asyncio.AbstractEventLoop, transport: asyncio.Transport, deadline: float) -> None:
-    """Retire transports without weakref support, releasing closed ones promptly."""
-    if transport.is_closing():
-        return
-    remaining = deadline - loop.time()
-    if remaining <= 0:
-        transport.abort()
-    else:
-        loop.call_later(min(remaining, 1.0), _poll_transport_expiry, loop, transport, deadline)
 
 
 def verification_error_detail(error: BaseException) -> str:
@@ -72,6 +58,41 @@ def _dns_matches(pattern: str, host: str) -> bool:
 
 
 @dataclass(frozen=True)
+class CertificateObservation:
+    fingerprint: str
+    not_valid_before: datetime
+    not_valid_after: datetime
+    observed_at: datetime
+
+
+@dataclass
+class TLSStatus:
+    """Process-local observations of fresh handshakes, never a trust policy."""
+
+    certificate: CertificateObservation | None = None
+    connection_error: str | None = None
+    error_at: datetime | None = None
+
+    def failed(self, error: Exception) -> None:
+        self.connection_error = verification_error_detail(error)
+        self.error_at = datetime.now(UTC)
+
+    def snapshot(self) -> dict[str, Any]:
+        cert = self.certificate
+        return {
+            "fingerprint": cert.fingerprint if cert else None,
+            "not_valid_before": cert.not_valid_before if cert else None,
+            "not_valid_after": cert.not_valid_after if cert else None,
+            "observed_at": cert.observed_at if cert else None,
+            "connection_error": self.connection_error,
+            "error_at": self.error_at,
+            "unknown": cert is None,
+            # This is the last observed certificate; an open connection can outlive it.
+            "stale": cert is None or self.connection_error is not None or cert.not_valid_after <= datetime.now(UTC),
+        }
+
+
+@dataclass(frozen=True)
 class TLSPolicy:
     server_ca: str
     certificate_sha256: str | None
@@ -102,17 +123,24 @@ class TLSPolicy:
         return ctx
 
     def verify(self, transport: asyncio.Transport, host: str) -> datetime:
-        """Verify the actual TLS peer, returning its expiry for connection retirement."""
+        """Verify a fresh TLS peer, returning its expiry without scheduling retirement."""
         peer = transport.get_extra_info("ssl_object")
         if peer is None:
             raise TLSVerificationError("TLS is required")
         der = peer.getpeercert(binary_form=True)
-        if not der or not hmac.compare_digest(hashlib.sha256(der).hexdigest(), self.certificate_sha256):
+        if not der:
+            raise TLSVerificationError("TLS peer did not provide a certificate")
+        if self.certificate_sha256 and not hmac.compare_digest(
+            hashlib.sha256(der).hexdigest(), self.certificate_sha256
+        ):
             raise TLSVerificationError("Certificate fingerprint mismatch")
         cert = x509.load_der_x509_certificate(der)
         now = datetime.now(UTC)
         if not cert.not_valid_before_utc <= now < cert.not_valid_after_utc:
             raise TLSVerificationError("Certificate invalid dates: expired or not yet valid")
+        if not self.certificate_sha256:
+            # OpenSSL already checked configured trust and identity during the handshake.
+            return cert.not_valid_after_utc
         try:
             sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         except x509.ExtensionNotFound:
@@ -127,56 +155,43 @@ class TLSPolicy:
             raise TLSVerificationError(f"Certificate identity mismatch: SAN does not match {host}")
         return cert.not_valid_after_utc
 
-    def guard(self, transport: asyncio.Transport, host: str) -> None:
-        if not self.certificate_sha256:
-            return
+    def guard(self, transport: asyncio.Transport, host: str, status: TLSStatus | None = None) -> None:
+        """Verify once, before application credentials reach a new connection."""
         try:
-            expiry = self.verify(transport, host)
+            self.verify(transport, host)
+            if status is not None:
+                der = transport.get_extra_info("ssl_object").getpeercert(binary_form=True)
+                cert = x509.load_der_x509_certificate(der)
+                status.certificate = CertificateObservation(
+                    hashlib.sha256(der).hexdigest(),
+                    cert.not_valid_before_utc,
+                    cert.not_valid_after_utc,
+                    datetime.now(UTC),
+                )
+                status.connection_error = None
+                status.error_at = None
         except BaseException:
             transport.abort()
             raise
-        # Abort active streams as well as idle pooled connections at certificate expiry.
-        loop = asyncio.get_running_loop()
-        delay = max(0, (expiry - datetime.now(UTC)).total_seconds())
-        try:
-            reference = weakref.ref(transport)
-        except TypeError:
-            # uvloop SSL transports cannot be weak-referenced. Poll their closed
-            # state so a strong reference lasts at most one second after close,
-            # while still aborting active connections at certificate expiry.
-            loop.call_later(min(delay, 1.0), _poll_transport_expiry, loop, transport, loop.time() + delay)
-            return
-
-        def expire() -> None:
-            current = reference()
-            if current is not None:
-                current.abort()
-
-        timer = loop.call_later(delay, expire)
-        weakref.finalize(transport, timer.cancel)
 
 
 class _PinnedConnectorMixin:
-    def __init__(self, *args: Any, tls_policy: TLSPolicy, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, tls_policy: TLSPolicy, tls_status: TLSStatus | None = None, **kwargs: Any) -> None:
         self._tls_policy = tls_policy
+        self._tls_status = tls_status
         super().__init__(*args, **kwargs)
 
     async def _create_connection(
         self, req: aiohttp.ClientRequest, traces: list[Trace], timeout: aiohttp.ClientTimeout
     ) -> ResponseHandler:
-        protocol = await super()._create_connection(req, traces, timeout)
-        self._tls_policy.guard(protocol.transport, req.url.raw_host)
-        return protocol
-
-    async def _get(self, key: ConnectionKey, traces: list[Trace]) -> Connection | None:
-        connection = await super()._get(key, traces)
-        if connection is not None:
-            try:
-                self._tls_policy.verify(connection.transport, key.host)
-            except BaseException:
-                connection.close()
-                raise
-        return connection
+        try:
+            protocol = await super()._create_connection(req, traces, timeout)
+            self._tls_policy.guard(protocol.transport, req.url.raw_host, self._tls_status)
+            return protocol
+        except Exception as error:
+            if self._tls_status is not None:
+                self._tls_status.failed(error)
+            raise
 
 
 class NodeTCPConnector(aiohttp.TCPConnector):
@@ -214,7 +229,11 @@ class PinnedTCPConnector(_PinnedConnectorMixin, NodeTCPConnector):
         # aiohttp marks the outer proxy connection with this error class. Verify
         # its CA and hostname before CONNECT can send proxy credentials; the
         # inner TLS connection keeps the node context and certificate pin.
-        if client_error is aiohttp.ClientProxyConnectionError and kwargs.get("ssl") is not None:
+        if (
+            self._tls_policy.certificate_sha256
+            and client_error is aiohttp.ClientProxyConnectionError
+            and kwargs.get("ssl") is not None
+        ):
             kwargs["ssl"] = self._proxy_ssl_context
         return await super()._wrap_create_connection(*args, req=req, client_error=client_error, **kwargs)
 
