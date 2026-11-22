@@ -13,6 +13,8 @@ from grpclib.config import Configuration
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 from grpclib.protocol import H2Protocol
+from h2.settings import SettingCodes
+from h2.utilities import SizeLimitDict
 from python_socks.async_.asyncio import Proxy
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
@@ -26,12 +28,42 @@ from PasarGuardNodeBridge.utils import format_host_for_url, grpc_to_http_status,
 RequestT = TypeVar("RequestT", bound=Message)
 ResponseT = TypeVar("ResponseT", bound=Message)
 
+# Default per-connection retention for closed streams. h2 keeps up to
+# MAX_CLOSED_STREAMS (65536) closed streams per connection for late-frame
+# handling; a panel<->node bridge never needs that much history, and 69
+# long-lived connections at the default cap retain hundreds of MiB.
+DEFAULT_MAX_CLOSED_STREAMS = 4096
+
+
+class _CappedH2Protocol(H2Protocol):
+    """H2Protocol whose h2 connection retains at most `max_closed_streams` closed streams."""
+
+    max_closed_streams: int | None = None
+
+    def connection_made(self, transport: BaseTransport) -> None:
+        super().connection_made(transport)
+        if self.max_closed_streams is not None:
+            h2_conn = self.connection._connection
+            h2_conn._closed_streams._size_limit = self.max_closed_streams
+            h2_conn._closed_streams._check_size_limit()
+
 
 class ProxiedChannel(Channel):
-    def __init__(self, *args: Any, proxy_url: str, proxy_rdns: bool | None = None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, proxy_url: str, proxy_rdns: bool | None = None, max_closed_streams: int | None = DEFAULT_MAX_CLOSED_STREAMS, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._proxy_url = proxy_url
         self._proxy_rdns = proxy_rdns
+        self._max_closed_streams = max_closed_streams
+
+    def _protocol_factory(self) -> H2Protocol:
+        protocol = super()._protocol_factory()
+        base = protocol.__class__ if protocol.__class__ is not H2Protocol else H2Protocol
+        protocol.__class__ = type(
+            "ProxiedCappedH2Protocol",
+            (_CappedH2Protocol, base),
+            {"max_closed_streams": self._max_closed_streams},
+        )
+        return protocol
 
     async def _create_connection(self) -> H2Protocol:
         proxy = Proxy.from_url(self._proxy_url, rdns=self._proxy_rdns)
@@ -51,10 +83,21 @@ class ProxiedChannel(Channel):
 
 
 class VerifiedChannel(Channel):
-    def __init__(self, *args: Any, tls_policy: TLSPolicy, tls_status: TLSStatus | None = None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, tls_policy: TLSPolicy, tls_status: TLSStatus | None = None, max_closed_streams: int | None = DEFAULT_MAX_CLOSED_STREAMS, **kwargs: Any) -> None:
         self._tls_policy = tls_policy
         self._tls_status = tls_status
+        self._max_closed_streams = max_closed_streams
         super().__init__(*args, **kwargs)
+
+    def _protocol_factory(self) -> H2Protocol:
+        protocol = super()._protocol_factory()
+        base = protocol.__class__ if protocol.__class__ is not H2Protocol else H2Protocol
+        protocol.__class__ = type(
+            "VerifiedCappedH2Protocol",
+            (_CappedH2Protocol, base),
+            {"max_closed_streams": self._max_closed_streams},
+        )
+        return protocol
 
     async def _create_connection(self) -> H2Protocol:
         policy = self._tls_policy
@@ -90,6 +133,7 @@ class Node(PasarGuardNode):
         internal_timeout: int = 15,
         max_message_size: int | None = None,
         proxy: str | None = None,
+        max_closed_streams: int | None = DEFAULT_MAX_CLOSED_STREAMS,
         *,
         server_ca: str | None = None,
         certificate_sha256: str | None = None,
@@ -120,6 +164,7 @@ class Node(PasarGuardNode):
             self._max_message_size = max_message_size
             channel_class = VerifiedChannel if self._proxy is None else VerifiedProxiedChannel
             channel_kwargs = {}
+            channel_kwargs["max_closed_streams"] = max_closed_streams
             if self._proxy is not None:
                 if not self._proxy.grpc_supported:
                     raise NodeAPIError(-7, f"{self._proxy.scheme.upper()} proxies are not supported for gRPC transport")
