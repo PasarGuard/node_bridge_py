@@ -13,8 +13,6 @@ from grpclib.config import Configuration
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError, StreamTerminatedError
 from grpclib.protocol import H2Protocol
-from h2.settings import SettingCodes
-from h2.utilities import SizeLimitDict
 from python_socks.async_.asyncio import Proxy
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
