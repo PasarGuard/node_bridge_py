@@ -32,6 +32,16 @@ ResponseT = TypeVar("ResponseT", bound=Message)
 # long-lived connections at the default cap retain hundreds of MiB.
 DEFAULT_MAX_CLOSED_STREAMS = 4096
 
+logger = logging.getLogger(__name__)
+
+# Floor for explicit caps. Below this, ordinary client cancels (RST_STREAM)
+# evict their own history entries fast enough that a late HEADERS/DATA for an
+# evicted stream surfaces as a connection-level PROTOCOL_ERROR and kills every
+# unrelated RPC multiplexed on the same connection (h2 turns "unknown stream"
+# into a connection error unless it can see the stream was closed by reset).
+# At ~120 bytes per entry the whole history at this floor is ~15 KiB.
+MIN_MAX_CLOSED_STREAMS = 128
+
 
 class _CappedH2Protocol(H2Protocol):
     """H2Protocol whose h2 connection retains at most `max_closed_streams` closed streams."""
@@ -51,6 +61,12 @@ class ProxiedChannel(Channel):
         super().__init__(*args, **kwargs)
         self._proxy_url = proxy_url
         self._proxy_rdns = proxy_rdns
+        if max_closed_streams is not None and max_closed_streams < MIN_MAX_CLOSED_STREAMS:
+            logger.warning(
+                "max_closed_streams=%d is below the safe floor; using %d instead",
+                max_closed_streams, MIN_MAX_CLOSED_STREAMS,
+            )
+            max_closed_streams = MIN_MAX_CLOSED_STREAMS
         self._max_closed_streams = max_closed_streams
 
     def _protocol_factory(self) -> H2Protocol:
@@ -87,6 +103,12 @@ class VerifiedChannel(Channel):
         self._tls_policy = tls_policy
         self._tls_status = tls_status
         super().__init__(*args, **kwargs)
+        if max_closed_streams is not None and max_closed_streams < MIN_MAX_CLOSED_STREAMS:
+            logger.warning(
+                "max_closed_streams=%d is below the safe floor; using %d instead",
+                max_closed_streams, MIN_MAX_CLOSED_STREAMS,
+            )
+            max_closed_streams = MIN_MAX_CLOSED_STREAMS
         self._max_closed_streams = max_closed_streams
 
     def _protocol_factory(self) -> H2Protocol:
@@ -164,6 +186,12 @@ class Node(PasarGuardNode):
             if max_message_size is None:
                 max_message_size = 64 * 1024 * 1024  # 64MB
             self._max_message_size = max_message_size
+            if max_closed_streams is not None and max_closed_streams < MIN_MAX_CLOSED_STREAMS:
+                logger.warning(
+                    "max_closed_streams=%d is below the safe floor; using %d instead",
+                    max_closed_streams, MIN_MAX_CLOSED_STREAMS,
+                )
+                max_closed_streams = MIN_MAX_CLOSED_STREAMS
             channel_class = VerifiedChannel if self._proxy is None else VerifiedProxiedChannel
             channel_kwargs = {}
             channel_kwargs["max_closed_streams"] = max_closed_streams

@@ -11,7 +11,6 @@ The test drives a real local plaintext gRPC server through the bridge's own
 connection's `_closed_streams` stays at the configured cap.
 """
 
-import asyncio
 import logging
 import unittest
 from unittest.mock import patch
@@ -20,9 +19,10 @@ from grpclib.const import Cardinality, Handler
 from grpclib.server import Server
 
 import PasarGuardNodeBridge.grpclib as bridge_grpclib
-from PasarGuardNodeBridge.common import service_pb2 as service
 from PasarGuardNodeBridge.common import service_grpc
-from PasarGuardNodeBridge.grpclib import Node as GrpcNode, ProxiedChannel
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.grpclib import Node as GrpcNode
+from PasarGuardNodeBridge.grpclib import ProxiedChannel
 from PasarGuardNodeBridge.storage import InMemoryUserSyncStore
 
 
@@ -61,7 +61,7 @@ class ClosedStreamsCapTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_lowered_cap_bounds_closed_stream_history(self):
-        """With max_closed_streams set, the retained closed-stream history stays at the cap."""
+        """With max_closed_streams set (>= the safe floor), the retained closed-stream history stays at the cap."""
 
         class Receiver:
             async def sync_users(inner, stream):
@@ -79,7 +79,7 @@ class ClosedStreamsCapTests(unittest.IsolatedAsyncioTestCase):
         await server.start("127.0.0.1", 0)
         port = server._server.sockets[0].getsockname()[1]
 
-        cap = 8
+        cap = bridge_grpclib.MIN_MAX_CLOSED_STREAMS
         node = self.make_node(port, max_closed_streams=cap)
         node._close_chan()
         with patch.object(bridge_grpclib, "Proxy", _DirectProxy):
@@ -109,6 +109,39 @@ class ClosedStreamsCapTests(unittest.IsolatedAsyncioTestCase):
             "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1"
         )
         self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.DEFAULT_MAX_CLOSED_STREAMS)
+        node._close_chan()
+
+    async def test_low_cap_clamped_to_floor(self):
+        """A cap below the safe floor is silently clamped (with a warning), not honored.
+
+        Below the floor, ordinary client cancels evict their own history entries
+        fast enough that a late HEADERS/DATA for an evicted stream surfaces as a
+        connection-level PROTOCOL_ERROR and kills every unrelated RPC on the
+        connection. None (uncapped) must stay untouched.
+        """
+        node = self.make_node(1)
+        node._close_chan()
+        with self.assertLogs("PasarGuardNodeBridge.grpclib", level="WARNING") as captured:
+            node.channel = ProxiedChannel(
+                "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1",
+                max_closed_streams=1,
+            )
+        self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
+        self.assertIn(str(bridge_grpclib.MIN_MAX_CLOSED_STREAMS), "\n".join(captured.output))
+        node._close_chan()
+
+        node.channel = ProxiedChannel(
+            "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1",
+            max_closed_streams=None,
+        )
+        self.assertIsNone(node.channel._max_closed_streams)
+        node._close_chan()
+
+        node.channel = ProxiedChannel(
+            "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1",
+            max_closed_streams=bridge_grpclib.MIN_MAX_CLOSED_STREAMS,
+        )
+        self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
         node._close_chan()
 
 
