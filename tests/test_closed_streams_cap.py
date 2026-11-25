@@ -1,0 +1,174 @@
+"""h2 closed-stream history retention tests (#1254).
+
+A long-lived gRPC connection whose streams keep closing retains a bounded
+per-connection history of closed streams. h2's default cap (MAX_CLOSED_STREAMS
+= 65536) is far above what a panel<->node bridge ever needs to hold, so the
+bridge must lower the per-channel retention without touching stream lifecycle
+itself.
+
+The test drives a real local plaintext gRPC server through the bridge's own
+`ProxiedChannel` with a pass-through proxy dialer, then asserts the h2
+connection's `_closed_streams` stays at the configured cap.
+"""
+
+import logging
+import unittest
+from unittest.mock import patch
+
+from grpclib.const import Cardinality, Handler
+from grpclib.server import Server
+
+import PasarGuardNodeBridge.grpclib as bridge_grpclib
+from PasarGuardNodeBridge.common import service_grpc
+from PasarGuardNodeBridge.common import service_pb2 as service
+from PasarGuardNodeBridge.grpclib import Node as GrpcNode
+from PasarGuardNodeBridge.grpclib import ProxiedChannel
+from PasarGuardNodeBridge.storage import InMemoryUserSyncStore
+
+
+class _DirectProxy:
+    """Pass-through stand-in for python-socks Proxy: dials the destination directly."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def from_url(cls, url: str, rdns=None, **kwargs):
+        return cls()
+
+    async def connect(self, dest_host, dest_port, timeout=None, **kwargs):
+        import socket
+
+        sock = socket.create_connection((dest_host, dest_port))
+        sock.setblocking(False)
+        return sock
+
+
+class ClosedStreamsCapTests(unittest.IsolatedAsyncioTestCase):
+    def make_node(self, port, **kwargs):
+        with patch("ssl.SSLContext.load_verify_locations"):
+            return GrpcNode(
+                address="127.0.0.1",
+                port=port,
+                api_port=1,
+                server_ca="test",
+                api_key="00000000-0000-0000-0000-000000000000",
+                node_id="closed-streams-cap",
+                user_sync_store=InMemoryUserSyncStore(),
+                sync_poll_interval=0.01,
+                logger=logging.getLogger("closed-streams-test"),
+                **kwargs,
+            )
+
+    async def test_lowered_cap_bounds_closed_stream_history(self):
+        """With max_closed_streams set (>= the safe floor), the retained closed-stream history stays at the cap."""
+
+        class Receiver:
+            async def sync_users(inner, stream):
+                await stream.recv_message()
+                await stream.send_message(service.Empty())
+
+            def __mapping__(inner):
+                return {
+                    "/service.NodeService/SyncUsers": Handler(
+                        inner.sync_users, Cardinality.UNARY_UNARY, service.Users, service.Empty
+                    ),
+                }
+
+        server = Server([Receiver()])
+        await server.start("127.0.0.1", 0)
+        port = server._server.sockets[0].getsockname()[1]
+
+        cap = bridge_grpclib.MIN_MAX_CLOSED_STREAMS
+        node = self.make_node(port, max_closed_streams=cap)
+        node._close_chan()
+        with patch.object(bridge_grpclib, "Proxy", _DirectProxy):
+            node.channel = ProxiedChannel(
+                "127.0.0.1", port, ssl=False, proxy_url="socks5://127.0.0.1:1",
+                max_closed_streams=cap,
+            )
+            node._client = service_grpc.NodeServiceStub(node.channel)
+            try:
+                for _ in range(cap * 4):
+                    await node._client.SyncUsers(
+                        service.Users(users=[service.User(email="u0@x")]),
+                        metadata=node._metadata,
+                    )
+                h2_conn = node.channel._protocol.connection._connection
+                self.assertLessEqual(len(h2_conn._closed_streams), cap)
+            finally:
+                node._close_chan()
+        server.close()
+        await server.wait_closed()
+
+    async def test_default_keeps_h2_behavior(self):
+        """Without the kwarg the cap is the bridge default (4096), not h2's 65536."""
+        node = self.make_node(1)
+        node._close_chan()
+        node.channel = ProxiedChannel(
+            "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1"
+        )
+        self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.DEFAULT_MAX_CLOSED_STREAMS)
+        node._close_chan()
+
+    async def test_low_cap_clamped_to_floor(self):
+        """A cap below the safe floor is silently clamped (with a warning), not honored.
+
+        Below the floor, ordinary client cancels evict their own history entries
+        fast enough that a late HEADERS/DATA for an evicted stream surfaces as a
+        connection-level PROTOCOL_ERROR and kills every unrelated RPC on the
+        connection. None (uncapped) must stay untouched.
+        """
+        node = self.make_node(1)
+        node._close_chan()
+        with self.assertLogs("PasarGuardNodeBridge.grpclib", level="WARNING") as captured:
+            node.channel = ProxiedChannel(
+                "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1",
+                max_closed_streams=1,
+            )
+        self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
+        self.assertIn(str(bridge_grpclib.MIN_MAX_CLOSED_STREAMS), "\n".join(captured.output))
+        node._close_chan()
+
+        node.channel = ProxiedChannel(
+            "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1",
+            max_closed_streams=None,
+        )
+        self.assertIsNone(node.channel._max_closed_streams)
+        node._close_chan()
+
+        node.channel = ProxiedChannel(
+            "127.0.0.1", 1, ssl=False, proxy_url="socks5://127.0.0.1:1",
+            max_closed_streams=bridge_grpclib.MIN_MAX_CLOSED_STREAMS,
+        )
+        self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
+        node._close_chan()
+
+    async def test_low_cap_node_without_logger_clamps(self):
+        """Node(max_closed_streams=1) with logger omitted must clamp, not raise.
+
+        The low-cap warning used the `logger` parameter, which is None when
+        omitted, so construction raised AttributeError (wrapped as NodeAPIError)
+        instead of clamping to the safe floor.
+        """
+        with patch("ssl.SSLContext.load_verify_locations"), self.assertLogs(level="WARNING") as captured:
+            node = GrpcNode(
+                address="127.0.0.1",
+                port=1,
+                api_port=1,
+                server_ca="test",
+                api_key="00000000-0000-0000-0000-000000000000",
+                node_id="cap-floor-no-logger",
+                user_sync_store=InMemoryUserSyncStore(),
+                sync_poll_interval=0.01,
+                max_closed_streams=1,
+            )
+        try:
+            self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
+            self.assertIn("below the safe floor", "\n".join(captured.output))
+        finally:
+            node._close_chan()
+
+
+if __name__ == "__main__":
+    unittest.main()
