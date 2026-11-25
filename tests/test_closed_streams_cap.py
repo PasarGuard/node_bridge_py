@@ -144,6 +144,31 @@ class ClosedStreamsCapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
         node._close_chan()
 
+    async def test_low_cap_node_without_logger_clamps(self):
+        """Node(max_closed_streams=1) with logger omitted must clamp, not raise.
+
+        The low-cap warning used the `logger` parameter, which is None when
+        omitted, so construction raised AttributeError (wrapped as NodeAPIError)
+        instead of clamping to the safe floor.
+        """
+        with patch("ssl.SSLContext.load_verify_locations"), self.assertLogs(level="WARNING") as captured:
+            node = GrpcNode(
+                address="127.0.0.1",
+                port=1,
+                api_port=1,
+                server_ca="test",
+                api_key="00000000-0000-0000-0000-000000000000",
+                node_id="cap-floor-no-logger",
+                user_sync_store=InMemoryUserSyncStore(),
+                sync_poll_interval=0.01,
+                max_closed_streams=1,
+            )
+        try:
+            self.assertEqual(node.channel._max_closed_streams, bridge_grpclib.MIN_MAX_CLOSED_STREAMS)
+            self.assertIn("below the safe floor", "\n".join(captured.output))
+        finally:
+            node._close_chan()
+
 
 if __name__ == "__main__":
     unittest.main()

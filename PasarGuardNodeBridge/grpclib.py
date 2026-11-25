@@ -187,7 +187,7 @@ class Node(PasarGuardNode):
                 max_message_size = 64 * 1024 * 1024  # 64MB
             self._max_message_size = max_message_size
             if max_closed_streams is not None and max_closed_streams < MIN_MAX_CLOSED_STREAMS:
-                logger.warning(
+                self.logger.warning(
                     "max_closed_streams=%d is below the safe floor; using %d instead",
                     max_closed_streams, MIN_MAX_CLOSED_STREAMS,
                 )
