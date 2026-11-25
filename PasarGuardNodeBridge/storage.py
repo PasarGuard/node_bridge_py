@@ -15,14 +15,15 @@ class NodeConfig:
     address: str
     port: int
     api_port: int
-    server_ca: str
     api_key: str
+    server_ca: str | None = field(default=None, kw_only=True)
     name: str = "default"
     extra: dict[str, Any] = field(default_factory=dict)
     default_timeout: int = 10
     internal_timeout: int = 15
     proxy: str | None = None
     max_message_size: int | None = None
+    certificate_sha256: str | None = field(default=None, kw_only=True)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -125,7 +126,7 @@ class NodeLifecycleCoordinatorProtocol(Protocol):
 
 
 class InMemoryNodeRegistry:
-    def __init__(self):
+    def __init__(self) -> None:
         self._nodes: dict[str, NodeConfig] = {}
         self._lock = asyncio.Lock()
 
@@ -147,7 +148,7 @@ class InMemoryNodeRegistry:
 
 
 class InMemoryUserSyncStore:
-    def __init__(self):
+    def __init__(self) -> None:
         # Keep the latest desired revision even while an older revision is leased.
         self._pending: dict[str, dict[str, tuple[User, int]]] = {}
         self._claimed: dict[str, dict[str, tuple[str, int, float]]] = {}
@@ -296,7 +297,7 @@ class InMemoryUserSyncStore:
 
 
 class InMemoryNodeLifecycleCoordinator:
-    def __init__(self):
+    def __init__(self) -> None:
         self._states: dict[str, NodeLifecycleState] = {}
         self._leases: dict[str, tuple[LifecycleLease, float]] = {}
         self._lock = asyncio.Lock()

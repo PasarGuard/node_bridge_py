@@ -109,7 +109,7 @@ class PasarGuardNode(Controller, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def _check_node_health(self):
+    async def _check_node_health(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
