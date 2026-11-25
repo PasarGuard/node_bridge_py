@@ -40,7 +40,7 @@ class _CappedH2Protocol(H2Protocol):
 
     max_closed_streams: int | None = None
 
-    def connection_made(self, transport: BaseTransport) -> None:
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
         super().connection_made(transport)
         if self.max_closed_streams is not None:
             h2_conn = self.connection._connection
@@ -57,6 +57,8 @@ class ProxiedChannel(Channel):
 
     def _protocol_factory(self) -> H2Protocol:
         protocol = super()._protocol_factory()
+        if isinstance(protocol, _CappedH2Protocol):
+            return protocol
         base = protocol.__class__ if protocol.__class__ is not H2Protocol else H2Protocol
         protocol.__class__ = type(
             "ProxiedCappedH2Protocol",
@@ -86,11 +88,13 @@ class VerifiedChannel(Channel):
     def __init__(self, *args: Any, tls_policy: TLSPolicy, tls_status: TLSStatus | None = None, max_closed_streams: int | None = DEFAULT_MAX_CLOSED_STREAMS, **kwargs: Any) -> None:
         self._tls_policy = tls_policy
         self._tls_status = tls_status
-        self._max_closed_streams = max_closed_streams
         super().__init__(*args, **kwargs)
+        self._max_closed_streams = max_closed_streams
 
     def _protocol_factory(self) -> H2Protocol:
         protocol = super()._protocol_factory()
+        if isinstance(protocol, _CappedH2Protocol):
+            return protocol
         base = protocol.__class__ if protocol.__class__ is not H2Protocol else H2Protocol
         protocol.__class__ = type(
             "VerifiedCappedH2Protocol",
