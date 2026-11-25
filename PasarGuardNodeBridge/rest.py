@@ -1,12 +1,15 @@
+import ast
 import asyncio
 import logging
 import random
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from types import TracebackType
 from typing import Any, NoReturn, Self, TypeVar, overload
 
 import aiohttp
+from aiohttp.http_exceptions import BadStatusLine, HttpProcessingError
 from google.protobuf.message import DecodeError, Message
 
 from PasarGuardNodeBridge.abstract_node import PasarGuardNode
@@ -18,6 +21,55 @@ from PasarGuardNodeBridge.tls import verification_error_detail
 from PasarGuardNodeBridge.utils import format_host_for_url
 
 ProtoMessageT = TypeVar("ProtoMessageT", bound=Message)
+
+# aiohttp's C parser quotes the bytes it could not parse as a Python bytes literal
+_QUOTED_BYTES = re.compile(r"b'(?:[^'\\\n]|\\.)*'|b\"(?:[^\"\\\n]|\\.)*\"")
+# An HTTP/2 or HTTP/3 status line: the whole version token, so HTTP/200 is not read as HTTP/2
+_HTTP2_OR_3_STATUS = re.compile(rb"HTTP/([23])(?:\.0)?(?:\s|$)")
+
+
+def _is_http2_control_frame(data: bytes) -> bool:
+    """True if data starts with a SETTINGS or GOAWAY frame header as a server sends first (RFC 9113, 4.1 / 6.5 / 6.8)."""
+    if len(data) < 9:
+        return False
+    length = int.from_bytes(data[:3], "big")
+    stream_id = int.from_bytes(data[5:9], "big") & 0x7FFFFFFF  # the top bit is reserved
+    if stream_id != 0 or length > 16384:  # both frames belong to stream 0; 16384 is the initial max frame size
+        return False
+    return (data[3] == 0x4 and length % 6 == 0) or (data[3] == 0x7 and length >= 8)
+
+
+def _describe_non_http11_answer(error: aiohttp.ClientResponseError) -> str | None:
+    """Describe an answer without an HTTP/1.x status line, or return None for any other error."""
+    parse_error = error.__cause__
+    bad_status_line = getattr(parse_error, "__cause__", None)
+    if not isinstance(parse_error, HttpProcessingError) or not isinstance(bad_status_line, BadStatusLine):
+        return None
+    # The pure-Python parser keeps the status line in .line, the C parser quotes the bytes in the message
+    received = (bad_status_line.line or "").encode(errors="replace")
+    if not received and (match := _QUOTED_BYTES.search(bad_status_line.message or "")):
+        try:
+            received = ast.literal_eval(match.group())
+        except (SyntaxError, ValueError):
+            received = b""
+
+    if received.startswith(b"HTTP/1."):
+        return None  # a malformed HTTP/1.x status line keeps the usual 400 mapping
+    if version := _HTTP2_OR_3_STATUS.match(received):
+        got = f"HTTP/{version[1].decode()}"
+    elif received.rstrip(b"\r\n") == b"PRI * HTTP/2.0" or _is_http2_control_frame(received):
+        # both parsers keep only the first line of the client preface, so it must match exactly
+        got = "HTTP/2"  # the client preface or a SETTINGS/GOAWAY frame
+    elif received[:1] in (b"\x15", b"\x16") and received[1:2] == b"\x03":
+        got = "TLS data"
+    elif received:
+        got = repr(received[:32])
+    else:
+        got = "an unparsable response"
+    return (
+        f"Node did not answer with HTTP/1.1 (got {got}); the REST API needs HTTP/1.1, "
+        "check the reverse proxy and TLS settings"
+    )
 
 
 class Node(PasarGuardNode):
@@ -108,6 +160,9 @@ class Node(PasarGuardNode):
             raise NodeAPIError(code=-2, detail=f"Network error: {error}")
         elif isinstance(error, BufferedStatusError):
             raise NodeAPIError(code=error.response.status_code, detail=f"HTTP error: {error.response.text}")
+        elif isinstance(error, aiohttp.ClientResponseError) and (detail := _describe_non_http11_answer(error)):
+            # aiohttp reports an answer it cannot parse as status 400, but the node never sent a status
+            raise NodeAPIError(code=-2, detail=f"Protocol error: {detail}")
         elif isinstance(error, aiohttp.ClientResponseError):
             raise NodeAPIError(code=error.status, detail=f"HTTP error: {error.message}")
         else:
@@ -391,8 +446,11 @@ class Node(PasarGuardNode):
                     return []
             except Exception as e:
                 error_type = type(e).__name__
+                error_text = str(e)
+                if isinstance(e, aiohttp.ClientResponseError) and (protocol := _describe_non_http11_answer(e)):
+                    error_text = f"Protocol error: {protocol}"
                 self.logger.warning(
-                    f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {e!s}"
+                    f"[{self.name}] Chunked REST sync failed for {len(users)} user(s) | Error: {error_type} - {error_text}"
                 )
                 # The node answers 500 with its backend's error when it refused the batch. It answers
                 # "backend not initialized" or "backend is not started" (also 500) or 503 when no core
@@ -403,7 +461,7 @@ class Node(PasarGuardNode):
                     and e.response.status_code == 500
                     and detail not in ("backend not initialized", "backend is not started")
                 )
-                return FailedUsers(users, rejected=rejected, detail=detail if rejected else str(e))
+                return FailedUsers(users, rejected=rejected, detail=detail if rejected else error_text)
 
     async def list_routing_rules(self, timeout: int | None = None) -> service.RoutingRulesResponse | None:
         timeout = timeout or self._default_timeout
